@@ -44,6 +44,15 @@ v = ds["v"].values
 t = ds["t"].values
 pv_era5_si = ds["pv"].values  # ERA5 native PV in SI (K m² kg⁻¹ s⁻¹)
 
+# Load specific humidity if available (new in v0.2.0)
+has_q = "q" in ds.data_vars
+if has_q:
+    q = ds["q"].values
+    print("  q loaded: specific humidity available → computing moist PV too")
+else:
+    q = None
+    print("  q NOT found — dry PV only")
+
 plev_hpa = ds["pressure_level"].values.astype(float)  # hPa
 lat = ds["latitude"].values.astype(float)             # °N
 lon = ds["longitude"].values.astype(float)            # °E
@@ -53,6 +62,8 @@ u = u.squeeze(axis=0)   # (lev, lat, lon)
 v = v.squeeze(axis=0)
 t = t.squeeze(axis=0)
 pv_era5_si = pv_era5_si.squeeze(axis=0)
+if has_q:
+    q = q.squeeze(axis=0)
 # Convert ERA5 PV from SI → PVU (1 PVU = 10⁻⁶ K m² kg⁻¹ s⁻¹)
 pv_era5 = pv_era5_si * 1.0e6
 
@@ -91,14 +102,19 @@ print(f"T range: [{t.min():.1f}, {t.max():.1f}] K")
 print(f"ERA5 PV range: [{pv_era5.min():.2f}, {pv_era5.max():.2f}] PVU")
 
 # ---- compute PV ----
-print("\nComputing Ertel PV (full 3-term formula) ...")
-pv_full = ertel_pv_isobaric(u, v, t, plev_Pa, lat, lon, method="full")
+print("\nComputing Ertel PV (simple (f+ζ)∂θ/∂p, DRY) ...")
+pv_dry = ertel_pv_isobaric(u, v, t, plev_Pa, lat, lon, method="simple")
 
-print("Computing Ertel PV (simple (f+ζ)∂θ/∂p only) ...")
-pv_simple = ertel_pv_isobaric(u, v, t, plev_Pa, lat, lon, method="simple")
+if has_q:
+    print("Computing Ertel PV (simple (f+ζ)∂θ/∂p, MOIST θ_v) ...")
+    pv_moist = ertel_pv_isobaric(u, v, t, plev_Pa, lat, lon, method="simple", q=q)
+else:
+    pv_moist = None
 
-print(f"\nPV full   range: [{pv_full.min():.2f}, {pv_full.max():.2f}] PVU")
-print(f"PV simple range: [{pv_simple.min():.2f}, {pv_simple.max():.2f}] PVU")
+print(f"\nPV dry    range: [{pv_dry.min():.2f}, {pv_dry.max():.2f}] PVU")
+if pv_moist is not None:
+    print(f"PV moist  range: [{pv_moist.min():.2f}, {pv_moist.max():.2f}] PVU")
+    print(f"PV diff   range: [{(pv_moist - pv_dry).min():.4f}, {(pv_moist - pv_dry).max():.4f}] PVU")
 print(f"ERA5 PV   range: [{pv_era5.min():.2f}, {pv_era5.max():.2f}] PVU")
 
 # ---- compare at key levels ----
@@ -116,13 +132,17 @@ levs = {
 
 for name, k in levs.items():
     p_actual = plev_Pa[k] / 100
-    diff_full = pv_full[k] - pv_era5[k]
-    diff_simple = pv_simple[k] - pv_era5[k]
+    diff_dry = pv_dry[k] - pv_era5[k]
     print(f"\n--- {name} (level {k}, p={p_actual:.0f} hPa) ---")
-    print(f"  PV full   vs ERA5: RMSE={np.sqrt(np.nanmean(diff_full**2)):.4f} PVU, "
-          f"bias={np.nanmean(diff_full):.4f}, corr={np.corrcoef(pv_full[k].ravel(), pv_era5[k].ravel())[0,1]:.4f}")
-    print(f"  PV simple vs ERA5: RMSE={np.sqrt(np.nanmean(diff_simple**2)):.4f} PVU, "
-          f"bias={np.nanmean(diff_simple):.4f}, corr={np.corrcoef(pv_simple[k].ravel(), pv_era5[k].ravel())[0,1]:.4f}")
+    print(f"  PV dry    vs ERA5: RMSE={np.sqrt(np.nanmean(diff_dry**2)):.4f} PVU, "
+          f"bias={np.nanmean(diff_dry):.4f}, corr={np.corrcoef(pv_dry[k].ravel(), pv_era5[k].ravel())[0,1]:.4f}")
+    if pv_moist is not None:
+        diff_moist = pv_moist[k] - pv_era5[k]
+        delta_rmse = np.sqrt(np.nanmean(diff_dry**2)) - np.sqrt(np.nanmean(diff_moist**2))
+        print(f"  PV moist  vs ERA5: RMSE={np.sqrt(np.nanmean(diff_moist**2)):.4f} PVU, "
+              f"bias={np.nanmean(diff_moist):.4f}, corr={np.corrcoef(pv_moist[k].ravel(), pv_era5[k].ravel())[0,1]:.4f}")
+        print(f"  ΔRMSE (dry − moist) = {delta_rmse:+.4f} PVU "
+              f"({'better' if delta_rmse > 0 else 'worse'})")
 
 # ---- plot ----
 print("\nGenerating comparison plots ...")
@@ -130,25 +150,30 @@ print("\nGenerating comparison plots ...")
 proj = ccrs.Robinson(central_longitude=0)
 pc = ccrs.PlateCarree()
 
-fig, axes = plt.subplots(3, 4, figsize=(22, 14),
+n_cols = 5 if pv_moist is not None else 4
+fig, axes = plt.subplots(3, n_cols, figsize=(5 * n_cols, 14),
                           subplot_kw={"projection": proj})
 axes = np.atleast_2d(axes)
 
 for row, (name, k) in enumerate(levs.items()):
     p_actual = plev_Pa[k] / 100
-    data_list = [
-        (pv_era5[k], f"ERA5 native PV\n{name} ({p_actual:.0f} hPa)"),
-        (pv_full[k], f"Computed PV (full)\n{name} ({p_actual:.0f} hPa)"),
-        (pv_simple[k], f"Computed PV (simple)\n{name} ({p_actual:.0f} hPa)"),
-        (pv_full[k] - pv_era5[k], f"Diff (full − ERA5)\n{name} ({p_actual:.0f} hPa)"),
+    
+    col_data = [
+        (pv_era5[k], f"ERA5 native PV\n{name}"),
+        (pv_dry[k], f"Computed PV (dry θ)\n{name}"),
     ]
+    if pv_moist is not None:
+        col_data.append((pv_moist[k], f"Computed PV (moist θ_v)\n{name}"))
+    col_data.append((pv_dry[k] - pv_era5[k], f"Diff (dry − ERA5)\n{name}"))
+    if pv_moist is not None:
+        col_data.append((pv_moist[k] - pv_era5[k], f"Diff (moist − ERA5)\n{name}"))
 
-    for col, (data, title) in enumerate(data_list):
+    for col, (data, title) in enumerate(col_data):
         ax = axes[row, col]
         is_diff = "Diff" in title
         vm = np.nanpercentile(np.abs(data), 99) if not is_diff else np.nanpercentile(np.abs(data), 99)
         if is_diff:
-            vm = max(vm, 0.1)  # avoid zero range
+            vm = max(vm, 0.1)
             cmap = "RdBu_r"
         else:
             cmap = "RdBu_r"
@@ -161,7 +186,8 @@ for row, (name, k) in enumerate(levs.items()):
                      label="PVU" if not is_diff else "Δ PVU")
         ax.set_title(title, fontsize=9)
 
-fig.suptitle("Ertel PV Validation: Computed vs ERA5 Native (2025-01-08 00Z)",
+moist_tag = " + Moisture Correction" if pv_moist is not None else ""
+fig.suptitle(f"Ertel PV Validation: Computed vs ERA5 Native (2025-01-08 00Z){moist_tag}",
              fontsize=13, y=0.98)
 plt.tight_layout()
 out_png = PLOT_DIR / "era5_pv_comparison.png"
@@ -170,16 +196,18 @@ print(f"  Saved: {out_png}")
 plt.close(fig)
 
 # ---- vertical profile of RMS difference ----
-rms_full = np.sqrt(np.nanmean((pv_full - pv_era5)**2, axis=(1, 2)))
-rms_simple = np.sqrt(np.nanmean((pv_simple - pv_era5)**2, axis=(1, 2)))
+rms_dry = np.sqrt(np.nanmean((pv_dry - pv_era5)**2, axis=(1, 2)))
 
 fig2, ax2 = plt.subplots(figsize=(7, 8))
-ax2.plot(rms_full, plev_Pa / 100, "b-o", label="Full formula", markersize=4)
-ax2.plot(rms_simple, plev_Pa / 100, "r--s", label="Simple (f+ζ)∂θ/∂p", markersize=4)
+ax2.plot(rms_dry, plev_Pa / 100, "b-o", label="Dry PV", markersize=4)
+if pv_moist is not None:
+    rms_moist = np.sqrt(np.nanmean((pv_moist - pv_era5)**2, axis=(1, 2)))
+    ax2.plot(rms_moist, plev_Pa / 100, "g--s", label="Moist PV (θ_v)", markersize=4)
 ax2.set_ylim(plev_Pa[-1] / 100, plev_Pa[0] / 100)
 ax2.set_ylabel("Pressure [hPa]")
 ax2.set_xlabel("RMS difference [PVU]")
-ax2.set_title("Vertical Profile: Computed PV − ERA5 Native PV\n(2025-01-08 00Z)")
+moist_tag2 = " — Dry vs Moist" if pv_moist is not None else ""
+ax2.set_title(f"Vertical Profile: Computed PV − ERA5 Native PV\n(2025-01-08 00Z){moist_tag2}")
 ax2.legend()
 ax2.grid(True, alpha=0.3)
 plt.tight_layout()

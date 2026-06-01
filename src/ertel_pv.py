@@ -43,17 +43,19 @@ def _compute_theta(t, p):
     ----------
     t : np.ndarray  (..., nlev, nlat, nlon) or (nlev, nlat, nlon)
         Temperature [K].
-    p : np.ndarray  (nlev,) or broadcastable
-        Pressure at each level [Pa] (ascending from surface to top, i.e.
-        highest pressure first).
+    p : np.ndarray  (nlev,) or (nlev, nlat, nlon)
+        Pressure at each level [Pa] (ascending from surface to top).
+        If 3-D, per-column hybrid-sigma pressure is used directly.
 
     Returns
     -------
     theta : np.ndarray  same shape as t
         Potential temperature [K].
     """
-    # Broadcast p to match t's level axis
-    p_bc = _broadcast_p(t, p)
+    if p.ndim == 1:
+        p_bc = _broadcast_p(t, p)
+    else:
+        p_bc = p
     return t * (P0 / p_bc) ** KAPPA
 
 
@@ -81,8 +83,10 @@ def _vert_deriv(f, p):
     ----------
     f : np.ndarray  (..., nlev, nlat, nlon)
         Field defined on pressure levels.
-    p : np.ndarray  (nlev,)
+    p : np.ndarray  (nlev,) or (nlev, nlat, nlon)
         Pressure [Pa] at each level (ascending, i.e. surface → top).
+        If 1-D, the same pressure levels are used for all columns (pure
+        pressure levels).  If 3-D, per-column hybrid-sigma pressure is used.
 
     Returns
     -------
@@ -92,42 +96,39 @@ def _vert_deriv(f, p):
     ndim = f.ndim
     lev_axis = -3 if ndim >= 3 else 0
     nlev = f.shape[lev_axis]
-    dp = np.diff(p)  # (nlev-1,)
 
-    # One-sided differences (forward / backward)
-    # df_dp_forward[k] = (f[k+1] - f[k]) / (p[k+1] - p[k])
-    df_dp_fwd = (np.take(f, np.arange(1, nlev), axis=lev_axis) -
-                 np.take(f, np.arange(0, nlev - 1), axis=lev_axis))
-    # Broadcast dp
-    shape_dp = [1] * ndim
-    shape_dp[lev_axis] = nlev - 1
-    df_dp_fwd = df_dp_fwd / dp.reshape(shape_dp)
+    # Forward differences: df_fwd[k] = (f[k+1] - f[k]) / (p[k+1] - p[k])
+    f_upper = np.take(f, np.arange(1, nlev), axis=lev_axis)
+    f_lower = np.take(f, np.arange(0, nlev - 1), axis=lev_axis)
 
-    # Centred = average of forward and backward
-    # backward[k] = (f[k] - f[k-1]) / (p[k] - p[k-1]) ... which is just fwd[k-1] shifted
-    # So centred[k] = 0.5 * (fwd[k] + fwd[k-1]) for interior k
-    # Top: fwd[0]; Bottom: fwd[-1]
-    # We can compute by averaging adjacent forward diffs
-    # centred[k] = 0.5*(fwd[k-1] + fwd[k]) for k=1..nlev-2
+    if p.ndim == 1:
+        dp = np.diff(p)
+        # Broadcast dp
+        shape_dp = [1] * ndim
+        shape_dp[lev_axis] = nlev - 1
+        df_dp_fwd = (f_upper - f_lower) / dp.reshape(shape_dp)
+    else:
+        # 3-D pressure: p has shape (nlev, nlat, nlon)
+        p_upper = np.take(p, np.arange(1, nlev), axis=0)
+        p_lower = np.take(p, np.arange(0, nlev - 1), axis=0)
+        df_dp_fwd = (f_upper - f_lower) / (p_upper - p_lower + 1e-12)
 
     # Build centred array
     dfdp = np.empty_like(f)
-    # Top boundary (k = nlev-1, lowest pressure): one-sided backward
-    # But our p is surface→top, so "top" is the last index.
-    # MPAS: if level==1 (surface) use one-sided forward (to level above)
-    #       if level==nVertLevels (top) use one-sided backward (to level below)
-    # Here surface is k=0 (highest pressure), top is k=nlev-1 (lowest pressure)
-    # Surface (k=0): forward difference (f[1]-f[0])/(p[1]-p[0])
-    idx_fwd0 = [slice(None)] * ndim
-    idx_fwd0[lev_axis] = 0
-    dfdp[tuple(idx_fwd0)] = df_dp_fwd[tuple(idx_fwd0)]
 
-    # Top (k=nlev-1): backward difference = last forward diff
+    # Top boundary (k = nlev-1, lowest pressure): one-sided backward
     idx_top = [slice(None)] * ndim
     idx_top[lev_axis] = nlev - 1
     idx_fwd_last = [slice(None)] * ndim
     idx_fwd_last[lev_axis] = nlev - 2
     dfdp[tuple(idx_top)] = df_dp_fwd[tuple(idx_fwd_last)]
+
+    # Surface (k=0): forward difference
+    idx_sfc = [slice(None)] * ndim
+    idx_sfc[lev_axis] = 0
+    idx_fwd0 = [slice(None)] * ndim
+    idx_fwd0[lev_axis] = 0
+    dfdp[tuple(idx_sfc)] = df_dp_fwd[tuple(idx_fwd0)]
 
     # Interior (k=1..nlev-2): centred = average of adjacent forward diffs
     if nlev > 2:
@@ -192,7 +193,8 @@ def _horiz_deriv(f, lat, lon, axis):
         raise ValueError(f"axis must be -1 (lon/x) or -2 (lat/y), got {axis}")
 
 
-def ertel_pv_isobaric(u, v, t, plev, lat, lon, method="full"):
+def ertel_pv_isobaric(u, v, t, plev, lat, lon, method="full",
+                      q=None, ps=None, hyam=None, hybm=None, p0=None):
     """Compute Ertel Potential Vorticity on pressure levels.
 
     Parameters
@@ -205,6 +207,9 @@ def ertel_pv_isobaric(u, v, t, plev, lat, lon, method="full"):
         Temperature [K].
     plev : np.ndarray  (nlev,)
         Pressure levels [Pa], ascending (surface → top of atmosphere).
+        For pure pressure levels, this IS the actual pressure.
+        For hybrid sigma-pressure levels, this is the APPROXIMATE pressure;
+        pass ``ps`` + ``hyam``/``hybm`` to compute actual pressure.
     lat : np.ndarray  (nlat,)
         Latitude [degrees North].
     lon : np.ndarray  (nlon,)
@@ -212,6 +217,18 @@ def ertel_pv_isobaric(u, v, t, plev, lat, lon, method="full"):
     method : str, optional
         ``"full"`` (default) — all three terms of the isobaric Ertel PV.
         ``"simple"`` — only the (f + ζ) ∂θ/∂p term.
+    q : np.ndarray, optional  same shape as u
+        Specific humidity [kg kg⁻¹]. If provided, virtual temperature
+        T_v = T × (1 + 0.61 × q) is used for θ_v.
+    ps : np.ndarray, optional  (nlat, nlon) or scalar
+        Surface pressure [Pa]. Required for hybrid sigma-pressure levels.
+    hyam : np.ndarray, optional  (nlev,)
+        Hybrid "a" coefficient at model midpoints. Used with ``hybm`` and
+        ``ps`` to compute actual pressure: p_k = hyam_k × p0 + hybm_k × ps.
+    hybm : np.ndarray, optional  (nlev,)
+        Hybrid "b" coefficient at model midpoints.
+    p0 : float, optional
+        Reference pressure [Pa] for hybrid formula. Default 100000 Pa.
 
     Returns
     -------
@@ -227,6 +244,14 @@ def ertel_pv_isobaric(u, v, t, plev, lat, lon, method="full"):
     where ζ = ∂v/∂x - ∂u/∂y is the isobaric relative vorticity and
     f = 2Ω sin(φ) is the Coriolis parameter.
 
+    If ``q`` is provided, virtual potential temperature θ_v is used,
+    improving accuracy in the moist lower troposphere.
+
+    For hybrid sigma-pressure levels (e.g., CESM2), pass ``ps``, ``hyam``,
+    ``hybm``, and ``p0`` to compute the actual pressure at each level
+    (p_k = hyam_k × p0 + hybm_k × ps), which is critical for accurate
+    vertical derivatives near the surface.
+
     Vertical differencing mirrors MPAS ``mpas_pv_diagnostics.F``: centred
     in the interior, one-sided at the top and bottom boundaries.
     """
@@ -237,8 +262,35 @@ def ertel_pv_isobaric(u, v, t, plev, lat, lon, method="full"):
     nlat_arr = lat.shape[0]
     nlon_arr = lon.shape[0]
 
-    # ---- potential temperature ----
-    theta = _compute_theta(t, plev)
+    # ---- handle hybrid sigma-pressure levels ----
+    if hyam is not None and hybm is not None and ps is not None:
+        if p0 is None:
+            p0 = P0
+        # Compute actual pressure: p_k = a_k * p0 + b_k * ps
+        # ps is (nlat, nlon); need to broadcast to (nlev, nlat, nlon)
+        if np.isscalar(ps):
+            ps_arr = np.full((nlat_arr, nlon_arr), ps)
+        else:
+            ps_arr = np.asarray(ps)
+        hyam_arr = np.asarray(hyam)
+        hybm_arr = np.asarray(hybm)
+        # Reshape for broadcasting
+        plev_actual = (hyam_arr.reshape(nlev, 1, 1) * p0 +
+                       hybm_arr.reshape(nlev, 1, 1) * ps_arr[np.newaxis, :, :])
+        # Ensure surface→top ordering (hybrid coeffs are typically top→surface)
+        if plev_actual[0, 0, 0] < plev_actual[-1, 0, 0]:
+            # Currently top→surface; flip to surface→top
+            plev_actual = plev_actual[::-1, :, :]
+    else:
+        plev_actual = plev
+
+    # ---- potential temperature (virtual if q provided) ----
+    if q is not None:
+        # Virtual temperature: T_v = T * (1 + 0.61 * q)
+        t_v = t * (1.0 + 0.61 * q)
+        theta = _compute_theta(t_v, plev_actual)
+    else:
+        theta = _compute_theta(t, plev_actual)
 
     # ---- Coriolis parameter ----
     f_cor = 2.0 * OMEGA * np.sin(np.deg2rad(lat))  # (nlat,)
@@ -254,9 +306,11 @@ def ertel_pv_isobaric(u, v, t, plev, lat, lon, method="full"):
     dthdy = _horiz_deriv(theta, lat, lon, axis=-2)
 
     # ---- vertical derivatives ----
-    dudp = _vert_deriv(u, plev)
-    dvdp = _vert_deriv(v, plev)
-    dthdp = _vert_deriv(theta, plev)
+    # Use plev_actual (3D for hybrid, 1D for pure pressure)
+    p_for_deriv = plev_actual if isinstance(plev_actual, np.ndarray) and plev_actual.ndim > 1 else plev_actual
+    dudp = _vert_deriv(u, p_for_deriv)
+    dvdp = _vert_deriv(v, p_for_deriv)
+    dthdp = _vert_deriv(theta, p_for_deriv)
 
     # ---- assemble PV ----
     # Term 1 (vortex stretching): (f + ζ) ∂θ/∂p
