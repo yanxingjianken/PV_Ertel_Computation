@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """Download CESM2-LENS2 daily U, V, T, PS from AWS S3 and compute Ertel PV.
 
-Primary: sigma-coordinate PV (37 σ levels, σ = p / p_s).
-Reference: isobaric PV.
+Sigma-coordinate PV on 11 essential σ levels (σ = p / p_s).
+Isobaric PV is NOT computed — sigma is the sole coordinate.
 
 Usage
 -----
@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 
-from src.ertel_pv import (ertel_pv_isobaric, ertel_pv_sigma, DEFAULT_SIGMA_LEVELS)
+from src.ertel_pv import ertel_pv_sigma, DEFAULT_SIGMA_LEVELS
 
 # ---- config ----
 DATA_DIR = _Path(__file__).resolve().parent / "data"
@@ -103,7 +103,7 @@ ds_out.to_netcdf(OUT_NC)
 print(f"  Saved: {OUT_NC} ({OUT_NC.stat().st_size / 1e6:.1f} MB)")
 
 # ---- compute PV ----
-print("\nComputing Ertel PV (sigma-coordinate, 37 levels) ...")
+print(f"\nComputing Ertel PV (sigma-coordinate, {len(DEFAULT_SIGMA_LEVELS)} levels) ...")
 u_arr = u_sub.values.astype(float)
 v_arr = v_sub.values.astype(float)
 t_arr = t_sub.values.astype(float)
@@ -117,13 +117,9 @@ u_arr = u_arr[::-1, :, :]; v_arr = v_arr[::-1, :, :]; t_arr = t_arr[::-1, :, :]
 plev_Pa = lev_hPa[::-1] * 100.0
 print(f"  plev: {plev_Pa[0]:.0f} → {plev_Pa[-1]:.0f} Pa  (sfc→top)")
 
-# Sigma PV (primary)
+# Sigma PV (sole product)
 pv_sigma, p_s3d = ertel_pv_sigma(u_arr, v_arr, t_arr, plev_Pa, ps_arr, lat, lon)
 print(f"  PV σ range: [{np.nanmin(pv_sigma):.1f}, {np.nanmax(pv_sigma):.1f}] PVU")
-
-# Isobaric PV (reference)
-pv_iso = ertel_pv_isobaric(u_arr, v_arr, t_arr, plev_Pa, lat, lon)
-print(f"  PV isobaric range: [{pv_iso.min():.1f}, {pv_iso.max():.1f}] PVU")
 
 # ---- plots ----
 proj = ccrs.Robinson(central_longitude=0); pc = ccrs.PlateCarree()
@@ -141,10 +137,10 @@ for ax, sig_tgt in zip(axes, [0.85, 0.50, 0.25]):
     cf = ax.pcolormesh(lon, lat, data, cmap="RdBu_r", transform=pc,
                        vmin=-vm, vmax=vm, rasterized=True)
     plt.colorbar(cf, ax=ax, shrink=0.6, pad=0.02, label="PVU")
-    ax.set_title(f"CESM2-LE PV  σ={sig[sig_tgt]:.3f}\n"
+    ax.set_title(f"CESM2-LE PV  σ={sig[ks]:.3f}  (nom {sig[ks]*1013:.0f} hPa)\n"
                  f"({member}, {date_str})", fontsize=9)
 
-fig.suptitle("CESM2-LENS2 Ertel PV (Sigma-coordinate, 37 levels)",
+fig.suptitle(f"COSM2-LENS2 Ertel PV (sigma-coordinate, {len(sig)} levels)",
              fontsize=13, y=0.98)
 plt.tight_layout()
 out_png = PLOT_DIR / "cesm2le_pv_sigma.png"

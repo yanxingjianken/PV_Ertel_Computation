@@ -9,9 +9,9 @@
 \usepackage{natbib}
 \usepackage{booktabs}
 
-\title{Ertel Potential Vorticity on Sigma and Pressure Levels}
+\title{Ertel Potential Vorticity on Sigma Levels}
 \author{PV\_Ertel\_Computation Project}
-\date{v0.4.0 --- June 2026}
+\date{v0.4.1 --- June 2026}
 
 \begin{document}
 \maketitle
@@ -25,30 +25,24 @@ Ertel's potential vorticity \citep{ertel1942} in height coordinates $(x,y,z)$:
 \end{equation}
 
 where $\vec{\omega}_a = \nabla \times \vec{u} + 2\vec{\Omega}$ (absolute
-vorticity), $\theta = T(p_0/p)^{R_d/c_p}$ (dry potential temperature).
+vorticity), $\theta = T(p_0/p)^{R_d/c_p}$ (dry potential temperature,
+$p_0 = 1000$\,hPa).
 
 Horizontal derivatives use spectrally accurate spherical harmonic transforms
 via \texttt{pvtend.sh\_ops}, eliminating polar singularities.
 
-\section{Isobaric Formulation (Reference)}
-
-Under hydrostatic approximation and neglecting horizontal gradients of $w$:
-
-\begin{equation}\label{eq:epv_p}
-\boxed{\mathrm{PV}_p = -g\left[
-  \frac{\partial v}{\partial p}\frac{\partial\theta}{\partial x}\Big|_p
-  - \frac{\partial u}{\partial p}\frac{\partial\theta}{\partial y}\Big|_p
-  + (f + \zeta_p)\frac{\partial\theta}{\partial p}
-\right]}
-\end{equation}
-
-\textbf{Simplified} (ERA5-like): $\mathrm{PV}_{p,\mathrm{simple}} = -g\,(f + \zeta_p)\,\partial\theta/\partial p$.
-In PVU: $\mathrm{PV}_{\mathrm{PVU}} = \mathrm{PV}_{\mathrm{SI}} \times 10^6$.
-
-\section{Sigma-Coordinate Formulation (Primary)}\label{sec:sigma}
+\section{Sigma-Coordinate Formulation}\label{sec:sigma}
 
 Terrain-following sigma: $\sigma = p/p_s$ where $p_s(x,y)$ is surface
-pressure.  Mimics MPAS-Atmosphere's native vertical coordinate.
+pressure [Pa].  Mimics MPAS-Atmosphere's native vertical coordinate.
+
+\textbf{Important distinction:}
+\begin{itemize}
+  \item $p_0 = 100{,}000$\,Pa = constant --- thermodynamic reference for $\theta$
+  \item $p_s(x,y)$ = varying 2-D field --- surface pressure for $\sigma = p/p_s$
+\end{itemize}
+
+These are separate quantities; $p_0$ never appears in the sigma PV formula.
 
 Coordinate transformation $\partial/\partial p \to (1/p_s)\partial/\partial\sigma$:
 
@@ -62,13 +56,6 @@ Coordinate transformation $\partial/\partial p \to (1/p_s)\partial/\partial\sigm
 
 \textbf{Analytic equivalence:} Ertel PV is coordinate-invariant:
 $\mathrm{PV}_\sigma(x,y,\sigma) = \mathrm{PV}_p(x,y,p=\sigma p_s)$.
-
-\textbf{Advantages over isobaric:}
-\begin{itemize}
-  \item Eliminates near-surface coordinate mismatch (850\,hPa problem).
-  \item Direct MPAS native-level analog.
-  \item Bypasses hybrid sigma-pressure coefficients; only $p_s$ needed.
-\end{itemize}
 
 \textbf{Simplified} form: $\mathrm{PV}_{\sigma,\mathrm{simple}} =
   -(g/p_s)\,(f + \zeta_\sigma)\,\partial\theta/\partial\sigma$.
@@ -87,70 +74,72 @@ Fields are interpolated from pressure to sigma levels via $\log p$-linear
 interpolation.  Values where $\sigma p_s$ falls outside
 $[p_{\min}, p_{\max}]$ are filled from the nearest valid level.
 
-\subsection{37-Level Sigma Grid}
+\subsection{11-Level Essential Sigma Grid}
 
-Default sigma grid mirrors ERA5 pressure levels normalized by
-$p_0 = 100{,}000$\,Pa:
+The sigma grid uses 11 essential levels spanning the boundary layer
+through the lower stratosphere --- all synoptically relevant and all
+within ERA5 data range globally ($\sigma_{\min} \cdot \min(p_s) > p_{\min}$):
 
 \begin{equation}
-\sigma_k \in \{1.000, 0.975, 0.950, \dots, 0.003, 0.002, 0.001\}
+\sigma_k \in \{1.000,\; 0.925,\; 0.850,\; 0.700,\; 0.600,\; 0.500,\;
+               0.400,\; 0.300,\; 0.250,\; 0.200,\; 0.100\}
 \end{equation}
 
-At sea level $p \approx \sigma_k \cdot 101325$\,Pa; terrain-following
-via $p = \sigma_k \cdot p_s(x,y)$.
+At sea level ($p_s \approx 101325$\,Pa): $p \approx \sigma_k \cdot 101325$\,Pa.
+Terrain-following: $p = \sigma_k \cdot p_s(x,y)$.
+
+This grid deliberately excludes $\sigma < 0.1$ (above $\sim$100\,hPa) ---
+mid-stratospheric levels where $\partial\theta/\partial\sigma$ becomes
+extremely large, producing unrealistic PV extremes ($\pm 10^5$\,PVU).
+The 11-level grid produces PV in the range $[-51, 71]$\,PVU, consistent
+with ERA5 native PV $[-62, 111]$\,PVU.
 
 \section{Validation}
 
-\subsection{ERA5 (2025-01-08 00Z, 37 $\sigma$ levels)}
+\subsection{ERA5 (2025-01-08 00Z, 11 $\sigma$ levels)}
 
 \begin{center}
 \begin{tabular}{lcc}
 \toprule
 Level & RMSE (PVU) & Correlation \\
 \midrule
-\multicolumn{3}{c}{\textbf{Isobaric (reference)}} \\
-850\,hPa & 3.53 & 0.28 \\
-500\,hPa & 0.22 & 0.96 \\
-250\,hPa & 0.99 & 0.97 \\
-\midrule
-\multicolumn{3}{c}{\textbf{Sigma-coordinate (primary)}} \\
-$\sigma = 0.850$ (nom.\ 861\,hPa) & \textbf{0.19} & \textbf{0.97} \\
-$\sigma = 0.500$ (nom.\ 507\,hPa) & 0.30 & 0.95 \\
-$\sigma = 0.250$ (nom.\ 253\,hPa) & 1.03 & 0.98 \\
+$\sigma = 0.850$ (nom.\ 861\,hPa) & 0.30 & 0.92 \\
+$\sigma = 0.500$ (nom.\ 507\,hPa) & 0.37 & 0.94 \\
+$\sigma = 0.250$ (nom.\ 253\,hPa) & 1.12 & 0.97 \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\textbf{Key result:} Sigma coordinates fix the near-surface PV problem.
-850\,hPa-level correlation improves from 0.28 to 0.97; RMSE drops from
-3.53 to 0.19\,PVU.
+All NaN fractions: 0\,\% (computed PV), 5.3\,\% (ERA5 native PV has
+missing values at some levels).  PV range matches ERA5 native PV
+without the stratospheric blow-up of the 37-level grid.
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=\textwidth]{../era_sanity_check/plots/era5_pv_sigma_comparison.png}
-\caption{ERA5 PV validation on sigma levels. Columns: ERA5 PV on $\sigma$,
-  computed sigma PV, difference (SH $-$ ERA5), isobaric difference.
+\caption{ERA5 PV validation on 11 sigma levels. Columns: ERA5 PV on $\sigma$,
+  computed sigma PV, difference (SH $-$ ERA5).
   Rows: $\sigma=0.85$, $0.50$, $0.25$.  (2025-01-08 00Z)}
 \label{fig:era5_validation}
 \end{figure}
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.65\textwidth]{../era_sanity_check/plots/era5_pv_sigma_rms_profile.png}
-\caption{RMS difference profile: sigma PV vs ERA5-on-$\sigma$ (red),
-  isobaric PV vs ERA5 (blue).}
+\includegraphics[width=0.6\textwidth]{../era_sanity_check/plots/era5_pv_sigma_rms_profile.png}
+\caption{RMS difference profile: 11 sigma levels vs ERA5-on-$\sigma$.
+  $\sigma$ values annotated on each point.}
 \label{fig:era5_rms}
 \end{figure}
 
 \subsection{CESM2-LENS2 (sigma, member \texttt{r10i1181p1f1})}
 
-CESM2 PV computed on sigma levels with surface pressure from the
+CESM2 PV computed on 11 sigma levels with surface pressure from the
 \texttt{PS} zarr store, bypassing all-NaN hybrid coefficients.
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=\textwidth]{../cesm2_compute/plots/cesm2le_pv_sigma.png}
-\caption{CESM2-LENS2 Ertel PV on sigma levels (2010-01-01).
+\caption{CESM2-LENS2 Ertel PV on 11 sigma levels (2010-01-01).
   $\sigma = 0.85$, $0.50$, $0.25$.}
 \label{fig:cesm2_pv}
 \end{figure}

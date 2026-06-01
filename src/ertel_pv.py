@@ -17,14 +17,16 @@ References
 import numpy as np
 
 G = 9.80665; OMEGA = 7.29212e-5; R_D = 287.0; C_P = 1004.0
+# P0 = 1000 hPa — thermodynamic reference pressure for θ = T·(P0/p)^κ.
+# This is a standard physical constant, NOT surface pressure p_s.
+# Sigma-coordinate PV uses varying p_s(x,y) for σ = p/p_s and divisor 1/p_s.
 P0 = 100000.0; KAPPA = R_D / C_P; PVU_SCALE = 1.0e6
 
-# 37 terrain-following sigma levels (ERA5 pressure levels / P0)
+# 11 essential terrain-following sigma levels: σ = p / p_s(x,y)  [sfc→top]
+# Boundary layer → lower stratosphere; all stay within ERA5 data range globally.
 DEFAULT_SIGMA_LEVELS = np.array([
-    1.000, 0.975, 0.950, 0.925, 0.900, 0.875, 0.850, 0.825, 0.800,
-    0.775, 0.750, 0.700, 0.650, 0.600, 0.550, 0.500, 0.450, 0.400,
-    0.350, 0.300, 0.250, 0.225, 0.200, 0.175, 0.150, 0.125, 0.100,
-    0.070, 0.050, 0.030, 0.020, 0.010, 0.007, 0.005, 0.003, 0.002, 0.001,
+    1.000, 0.925, 0.850, 0.700, 0.600, 0.500,
+    0.400, 0.300, 0.250, 0.200, 0.100,
 ], dtype=float)
 
 def _compute_theta(t, p):
