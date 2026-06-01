@@ -1,0 +1,10 @@
+*.nc
+__pycache__/
+data/
+*.pyc
+.ipynb_checkpoints/
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
