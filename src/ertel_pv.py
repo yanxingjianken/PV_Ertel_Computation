@@ -13,6 +13,9 @@ References
 ----------
 * MPAS Fortran: mpas_pv_diagnostics.F
 * pvtend SH operators: pvtend/src/pvtend/sh_ops.py
+* MPAS PV best-practice: compute on native model (sigma) levels, not isobaric —
+  https://forum.mmm.ucar.edu/threads/potential-vorticity-calculation-in-mpas-a.16001/
+  (AlexLojko, Mar 2024). We follow this: PV_σ on σ = p/p_s is primary.
 """
 import numpy as np
 
