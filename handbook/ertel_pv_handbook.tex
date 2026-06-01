@@ -7,297 +7,162 @@
 \usepackage[margin=2.5cm]{geometry}
 \usepackage{graphicx}
 \usepackage{natbib}
+\usepackage{booktabs}
 
-\title{Ertel Potential Vorticity Computation on Pressure Levels}
-\author{PV\_Ertel\_Computation Project \\ \texttt{https://github.com/yanxingjianken/PV\_Ertel\_Computation}}
-\date{v0.2.0 — June 2026}
+\title{Ertel Potential Vorticity on Sigma and Pressure Levels}
+\author{PV\_Ertel\_Computation Project}
+\date{v0.4.0 --- June 2026}
 
 \begin{document}
 \maketitle
 
 \section{Ertel PV in Height Coordinates}
 
-Ertel's potential vorticity \citep{ertel1942} in height coordinates $(x,y,z)$ is:
+Ertel's potential vorticity \citep{ertel1942} in height coordinates $(x,y,z)$:
 
 \begin{equation}\label{eq:epv_z}
 \mathrm{EPV} = \frac{1}{\rho}\,(\vec{\omega}_a \cdot \nabla\theta)
 \end{equation}
 
-where:
-\begin{itemize}
-  \item $\rho$ = density [kg\,m$^{-3}$]
-  \item $\vec{\omega}_a = \nabla \times \vec{u} + 2\vec{\Omega}$ = absolute vorticity [s$^{-1}$]
-  \item $\theta = T(p_0/p)^{R_d/c_p}$ = potential temperature [K]
-\end{itemize}
+where $\vec{\omega}_a = \nabla \times \vec{u} + 2\vec{\Omega}$ (absolute
+vorticity), $\theta = T(p_0/p)^{R_d/c_p}$ (dry potential temperature).
 
-In component form:
-\begin{align}
-\vec{\omega}_a &= \left(
-  \frac{\partial w}{\partial y} - \frac{\partial v}{\partial z},\;
-  \frac{\partial u}{\partial z} - \frac{\partial w}{\partial x},\;
-  \frac{\partial v}{\partial x} - \frac{\partial u}{\partial y} + f
-\right) \\
-\mathrm{EPV} &= \frac{1}{\rho}\left[
-  \left(\frac{\partial w}{\partial y} - \frac{\partial v}{\partial z}\right)\frac{\partial\theta}{\partial x}
-+ \left(\frac{\partial u}{\partial z} - \frac{\partial w}{\partial x}\right)\frac{\partial\theta}{\partial y}
-+ \left(\zeta + f\right)\frac{\partial\theta}{\partial z}
-\right]
-\end{align}
+Horizontal derivatives use spectrally accurate spherical harmonic transforms
+via \texttt{pvtend.sh\_ops}, eliminating polar singularities.
 
-where $\zeta = \partial v/\partial x - \partial u/\partial y$ is the relative vorticity and $f = 2\Omega\sin\phi$ is the Coriolis parameter.
+\section{Isobaric Formulation (Reference)}
 
-The MPAS-Atmosphere model \citep{skamarock2012} computes EPV on its native
-height-based, terrain-following vertical coordinate using finite-volume flux
-divergence on a Voronoi mesh (see \texttt{mpas\_pv\_diagnostics.F}).
-
-\section{Isobaric Transformation}
-
-Under the hydrostatic approximation $\partial p/\partial z = -\rho g$, the
-vertical coordinate transforms from $z$ to $p$:
-
-\begin{equation}
-\frac{\partial}{\partial z} \rightarrow -\rho g\frac{\partial}{\partial p}
-\end{equation}
-
-Applying this to Eq.~\eqref{eq:epv_z}:
-
-\begin{align}
-\mathrm{EPV} &= \frac{1}{\rho}\bigg[
-  \frac{\partial w}{\partial y}\frac{\partial\theta}{\partial x}
-  - \frac{\partial w}{\partial x}\frac{\partial\theta}{\partial y}
-  + \rho g\left(
-    \frac{\partial v}{\partial p}\frac{\partial\theta}{\partial x}
-    - \frac{\partial u}{\partial p}\frac{\partial\theta}{\partial y}
-    - (\zeta + f)\frac{\partial\theta}{\partial p}
-  \right)
-\biggr]
-\end{align}
-
-Neglecting terms involving the horizontal gradient of vertical velocity $w$
-(valid at synoptic and larger scales), we obtain the \textbf{isobaric Ertel PV}:
+Under hydrostatic approximation and neglecting horizontal gradients of $w$:
 
 \begin{equation}\label{eq:epv_p}
-\boxed{\mathrm{PV} = -g\left[
-  \frac{\partial v}{\partial p}\frac{\partial\theta}{\partial x}
-  - \frac{\partial u}{\partial p}\frac{\partial\theta}{\partial y}
-  + (f + \zeta)\frac{\partial\theta}{\partial p}
+\boxed{\mathrm{PV}_p = -g\left[
+  \frac{\partial v}{\partial p}\frac{\partial\theta}{\partial x}\Big|_p
+  - \frac{\partial u}{\partial p}\frac{\partial\theta}{\partial y}\Big|_p
+  + (f + \zeta_p)\frac{\partial\theta}{\partial p}
 \right]}
 \end{equation}
 
-In PVU ($1\;\mathrm{PVU} = 10^{-6}\,\mathrm{K\,m^2\,kg^{-1}\,s^{-1}}$):
+\textbf{Simplified} (ERA5-like): $\mathrm{PV}_{p,\mathrm{simple}} = -g\,(f + \zeta_p)\,\partial\theta/\partial p$.
+In PVU: $\mathrm{PV}_{\mathrm{PVU}} = \mathrm{PV}_{\mathrm{SI}} \times 10^6$.
 
-\begin{equation}
-\mathrm{PV}_{\mathrm{PVU}} = \mathrm{PV}_{\mathrm{SI}} \times 10^6
+\section{Sigma-Coordinate Formulation (Primary)}\label{sec:sigma}
+
+Terrain-following sigma: $\sigma = p/p_s$ where $p_s(x,y)$ is surface
+pressure.  Mimics MPAS-Atmosphere's native vertical coordinate.
+
+Coordinate transformation $\partial/\partial p \to (1/p_s)\partial/\partial\sigma$:
+
+\begin{equation}\label{eq:epv_sigma}
+\boxed{\mathrm{PV}_\sigma = -\frac{g}{p_s}\left[
+  \frac{\partial v}{\partial\sigma}\frac{\partial\theta}{\partial x}\Big|_\sigma
+  - \frac{\partial u}{\partial\sigma}\frac{\partial\theta}{\partial y}\Big|_\sigma
+  + (f + \zeta_\sigma)\frac{\partial\theta}{\partial\sigma}
+\right]}
 \end{equation}
 
-\section{Full 3-Term vs Simplified Formula}
+\textbf{Analytic equivalence:} Ertel PV is coordinate-invariant:
+$\mathrm{PV}_\sigma(x,y,\sigma) = \mathrm{PV}_p(x,y,p=\sigma p_s)$.
 
-Eq.~\eqref{eq:epv_p} contains three terms:
+\textbf{Advantages over isobaric:}
+\begin{itemize}
+  \item Eliminates near-surface coordinate mismatch (850\,hPa problem).
+  \item Direct MPAS native-level analog.
+  \item Bypasses hybrid sigma-pressure coefficients; only $p_s$ needed.
+\end{itemize}
 
-\begin{enumerate}
-  \item \textbf{Vortex stretching}: $(f + \zeta)\,\partial\theta/\partial p$
-  \item \textbf{Horizontal shear (1)}: $(\partial v/\partial p)(\partial\theta/\partial x)$
-  \item \textbf{Horizontal shear (2)}: $-(\partial u/\partial p)(\partial\theta/\partial y)$
-\end{enumerate}
-
-The simplified (ERA5-like) formula retains only term (1):
-
-\begin{equation}\label{eq:simple}
-\mathrm{PV}_{\mathrm{simple}} = -g\,(f + \zeta)\,\frac{\partial\theta}{\partial p}
-\end{equation}
-
-This approximation is valid when the horizontal shear of the vertical wind
-shear is small compared to planetary vorticity stretching — true for most
-synoptic-scale flows but not near strong fronts or jets.
-
-In practice, Eq.~\eqref{eq:simple} is what ERA5 reports as potential vorticity
-on pressure levels. Our validation against ERA5 native PV shows that the
-simplified formula matches better (RMSE $\sim\!0.21$ PVU at 500\,hPa) than
-the full 3-term formula (RMSE $\sim\!0.35$ PVU), because the additional
-shear terms introduce numerical noise that outweighs their physical
-contribution at the resolutions tested.
-
-\section{Moisture Correction}
-
-In the presence of water vapor, the virtual temperature $T_v$ replaces $T$:
-
-\begin{equation}
-T_v = T\,(1 + 0.61\,q)
-\end{equation}
-
-where $q$ is specific humidity [kg\,kg$^{-1}$]. The virtual potential
-temperature is then:
-
-\begin{equation}
-\theta_v = T_v\left(\frac{p_0}{p}\right)^{R_d/c_p}
-\end{equation}
-
-Using $\theta_v$ instead of $\theta$ in Eq.~\eqref{eq:epv_p} provides a
-moisture correction that is largest in the tropical boundary layer (where
-$q \sim 0.015$--$0.020$\,kg\,kg$^{-1}$, giving $T_v - T \sim 3$--$4$\,K).
-At mid-tropospheric levels and above, $q \ll 0.001$ and the correction is
-negligible.
-
-Our ERA5 validation shows that the moisture correction reduces RMSE by
-${\sim}0.001$ PVU at 500\,hPa — a negligible improvement for synoptic-scale
-studies, but potentially relevant for tropical or boundary-layer
-applications.
+\textbf{Simplified} form: $\mathrm{PV}_{\sigma,\mathrm{simple}} =
+  -(g/p_s)\,(f + \zeta_\sigma)\,\partial\theta/\partial\sigma$.
 
 \section{Numerical Discretization}
 
-\subsection{Vertical Derivatives}\label{sec:vert}
+\subsection{Vertical Derivatives}
 
-Following MPAS \texttt{calc\_vertDeriv\_center} and
-\texttt{calc\_vertDeriv\_one}, we use:
+MPAS-style centred/sided differences. Coordinate-array ordering is
+auto-detected (ascending or descending).  Boundary derivatives follow
+MPAS \texttt{calc\_vertDeriv\_one}.
 
-\begin{itemize}
-  \item \textbf{Interior} ($k = 1,\ldots,N-2$): centred difference
-    \begin{equation}
-    \left.\frac{\partial f}{\partial p}\right|_k = \frac{1}{2}\left(
-      \frac{f_{k+1} - f_k}{p_{k+1} - p_k}
-    + \frac{f_k - f_{k-1}}{p_k - p_{k-1}}
-    \right)
-    \end{equation}
-  \item \textbf{Top} ($k = N-1$, lowest pressure): one-sided backward
-    \begin{equation}
-    \left.\frac{\partial f}{\partial p}\right|_{N-1} =
-      \frac{f_{N-1} - f_{N-2}}{p_{N-1} - p_{N-2}}
-    \end{equation}
-  \item \textbf{Surface} ($k = 0$, highest pressure): one-sided forward
-    \begin{equation}
-    \left.\frac{\partial f}{\partial p}\right|_0 =
-      \frac{f_1 - f_0}{p_1 - p_0}
-    \end{equation}
-\end{itemize}
+\subsection{Sigma Interpolation}
 
-Pressure levels are ordered surface $\to$ top of atmosphere (highest to
-lowest pressure) throughout.
+Fields are interpolated from pressure to sigma levels via $\log p$-linear
+interpolation.  Values where $\sigma p_s$ falls outside
+$[p_{\min}, p_{\max}]$ are filled from the nearest valid level.
 
-\subsection{Horizontal Derivatives}
+\subsection{37-Level Sigma Grid}
 
-On a regular latitude--longitude grid:
-
-\begin{align}
-\frac{\partial f}{\partial y} &= \frac{1}{R_E}\frac{\partial f}{\partial\phi}
-  \approx \frac{1}{R_E}\frac{\Delta f}{\Delta\phi} \\
-\frac{\partial f}{\partial x} &= \frac{1}{R_E\cos\phi}\frac{\partial f}{\partial\lambda}
-  \approx \frac{1}{R_E\cos\phi}\frac{\Delta f}{\Delta\lambda}
-\end{align}
-
-where $R_E = 6.371 \times 10^6$\,m and $\Delta\phi$, $\Delta\lambda$ are
-computed via \texttt{numpy.gradient}.
-
-\subsection{Pole Handling}
-
-At the poles ($\phi = \pm 90^\circ$), $\cos\phi = 0$ and $dx \to 0$,
-leading to a singularity in $\partial/\partial x$. We clip $\cos\phi$ to a
-minimum value corresponding to half a grid spacing from the pole:
+Default sigma grid mirrors ERA5 pressure levels normalized by
+$p_0 = 100{,}000$\,Pa:
 
 \begin{equation}
-\cos\phi_{\min} = \cos(90^\circ - 0.5\,\Delta\phi)
+\sigma_k \in \{1.000, 0.975, 0.950, \dots, 0.003, 0.002, 0.001\}
 \end{equation}
 
-For a $1^\circ$ grid, $\cos\phi_{\min} \approx 0.0087$.
+At sea level $p \approx \sigma_k \cdot 101325$\,Pa; terrain-following
+via $p = \sigma_k \cdot p_s(x,y)$.
 
-\section{Hybrid Sigma-Pressure Levels}
+\section{Validation}
 
-For models using a hybrid vertical coordinate (e.g., CESM2/CAM6), the
-pressure at model level $k$ is:
-
-\begin{equation}\label{eq:hybrid}
-p_k = a_k\,p_0 + b_k\,p_s
-\end{equation}
-
-where $a_k$ (``hyam'') and $b_k$ (``hybm'') are the hybrid coefficients at
-model midpoints, $p_0 = 100{,}000$\,Pa is the reference pressure, and $p_s$
-is the surface pressure.
-
-When $a_k$ and $b_k$ are available, the per-column actual pressure $p_k(i,j)$
-replaces the 1-D approximate pressure level array in all vertical derivative
-computations (Sec.~\ref{sec:vert}). This is critical for accurate PV near
-the surface, where hybrid levels deviate most from pure pressure levels.
-
-\paragraph{Note for CESM2-LENS2 users:} The static grid file on AWS S3
-(\texttt{atm/static/grid.zarr}) contains NaN values for the hybrid
-coefficients as of 2026-06-01. Users must obtain $a_k$ and $b_k$ from
-alternative sources (e.g., CAM initial condition files, CESM source code)
-to use this feature.
-
-\section{Validation Methodology}
-
-\subsection{ERA5 Comparison}
-
-We validate against ERA5 native potential vorticity on pressure levels
-(product: \texttt{reanalysis-era5-pressure-levels}, variable:
-\texttt{potential\_vorticity}).
-
-For a test case (2025-01-08 00Z, all 37 pressure levels, global $0.25^\circ$):
+\subsection{ERA5 (2025-01-08 00Z, 37 $\sigma$ levels)}
 
 \begin{center}
-\begin{tabular}{lccc}
-\hline
-Level & RMSE (simple, PVU) & Bias (PVU) & Correlation \\
-\hline
-850\,hPa & 3.53 & +0.10 & 0.28 \\
-500\,hPa & 0.21 & +0.01 & 0.96 \\
-250\,hPa & 1.09 & -0.03 & 0.97 \\
-\hline
+\begin{tabular}{lcc}
+\toprule
+Level & RMSE (PVU) & Correlation \\
+\midrule
+\multicolumn{3}{c}{\textbf{Isobaric (reference)}} \\
+850\,hPa & 3.53 & 0.28 \\
+500\,hPa & 0.22 & 0.96 \\
+250\,hPa & 0.99 & 0.97 \\
+\midrule
+\multicolumn{3}{c}{\textbf{Sigma-coordinate (primary)}} \\
+$\sigma = 0.850$ (nom.\ 861\,hPa) & \textbf{0.19} & \textbf{0.97} \\
+$\sigma = 0.500$ (nom.\ 507\,hPa) & 0.30 & 0.95 \\
+$\sigma = 0.250$ (nom.\ 253\,hPa) & 1.03 & 0.98 \\
+\bottomrule
 \end{tabular}
 \end{center}
 
-The poor 850\,hPa comparison is expected: pressure-level PV products are
-least accurate near the surface where terrain-following coordinates differ
-most from pressure coordinates. The excellent 500\,hPa and 250\,hPa
-comparisons confirm the validity of the isobaric PV computation for the
-free troposphere and lower stratosphere.
+\textbf{Key result:} Sigma coordinates fix the near-surface PV problem.
+850\,hPa-level correlation improves from 0.28 to 0.97; RMSE drops from
+3.53 to 0.19\,PVU.
 
-\subsection{CESM2-LENS2 Quick-Look}
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../era_sanity_check/plots/era5_pv_sigma_comparison.png}
+\caption{ERA5 PV validation on sigma levels. Columns: ERA5 PV on $\sigma$,
+  computed sigma PV, difference (SH $-$ ERA5), isobaric difference.
+  Rows: $\sigma=0.85$, $0.50$, $0.25$.  (2025-01-08 00Z)}
+\label{fig:era5_validation}
+\end{figure}
 
-Applied to member \texttt{r10i1181p1f1} (2010-01-01), with 32 hybrid levels
-using approximate pressure. PV values are physically reasonable:
-$-1.8$ to $+3.1$\,PVU at $\sim$525\,hPa, and
-$-10.3$ to $+11.8$\,PVU at $\sim$233\,hPa.
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.65\textwidth]{../era_sanity_check/plots/era5_pv_sigma_rms_profile.png}
+\caption{RMS difference profile: sigma PV vs ERA5-on-$\sigma$ (red),
+  isobaric PV vs ERA5 (blue).}
+\label{fig:era5_rms}
+\end{figure}
 
-\section*{References}
+\subsection{CESM2-LENS2 (sigma, member \texttt{r10i1181p1f1})}
 
-\bibliographystyle{plainnat}
+CESM2 PV computed on sigma levels with surface pressure from the
+\texttt{PS} zarr store, bypassing all-NaN hybrid coefficients.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../cesm2_compute/plots/cesm2le_pv_sigma.png}
+\caption{CESM2-LENS2 Ertel PV on sigma levels (2010-01-01).
+  $\sigma = 0.85$, $0.50$, $0.25$.}
+\label{fig:cesm2_pv}
+\end{figure}
+
 \begin{thebibliography}{10}
-
-\bibitem{ertel1942}
-Ertel, H. (1942).
-Ein neuer hydrodynamischer Wirbelsatz.
-\textit{Meteorologische Zeitschrift}, 59, 277--281.
-
-\bibitem{holton2013}
-Holton, J.~R.\ \& Hakim, G.~J. (2013).
-\textit{An Introduction to Dynamic Meteorology}, 5th ed.
-Academic Press.
-
-\bibitem{bluestein1992}
-Bluestein, H.~B. (1992).
-\textit{Synoptic-Dynamic Meteorology in Midlatitudes}, Vol.~I.
-Oxford University Press.
-
-\bibitem{skamarock2012}
-Skamarock, W.~C.\ et al. (2012).
-A description of the Advanced Research WRF version 3.
-NCAR Technical Note NCAR/TN-475+STR.
-
-\bibitem{mpas}
-MPAS-Atmosphere source code.
-\texttt{mpas\_toolchain/mpas/src/core\_atmosphere/diagnostics/mpas\_pv\_diagnostics.F}
-
-\bibitem{era5}
-Hersbach, H.\ et al. (2020).
-The ERA5 global reanalysis.
-\textit{Quarterly Journal of the Royal Meteorological Society}, 146, 1999--2049.
-
-\bibitem{cesm2le}
-Rodgers, K.~B.\ et al. (2021).
-The CESM2 Large Ensemble.
-\textit{Earth System Dynamics}, in preparation.
-Data: \url{https://registry.opendata.aws/ncar-cesm2-lens/}
-
+\bibitem{ertel1942} Ertel, H. (1942). Ein neuer hydrodynamischer Wirbelsatz.
+  \textit{Meteorol. Z.}, 59, 277--281.
+\bibitem{holton2013} Holton, J.~R.\ \& Hakim, G.~J. (2013).
+  \textit{An Introduction to Dynamic Meteorology}, 5th ed. Academic Press.
+\bibitem{skamarock2012} Skamarock, W.~C.\ et~al. (2012).
+  A description of the Advanced Research WRF version 3.
+  NCAR Technical Note NCAR/TN-475+STR.
 \end{thebibliography}
 
 \end{document}

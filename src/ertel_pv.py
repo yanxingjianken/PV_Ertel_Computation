@@ -19,6 +19,14 @@ import numpy as np
 G = 9.80665; OMEGA = 7.29212e-5; R_D = 287.0; C_P = 1004.0
 P0 = 100000.0; KAPPA = R_D / C_P; PVU_SCALE = 1.0e6
 
+# 37 terrain-following sigma levels (ERA5 pressure levels / P0)
+DEFAULT_SIGMA_LEVELS = np.array([
+    1.000, 0.975, 0.950, 0.925, 0.900, 0.875, 0.850, 0.825, 0.800,
+    0.775, 0.750, 0.700, 0.650, 0.600, 0.550, 0.500, 0.450, 0.400,
+    0.350, 0.300, 0.250, 0.225, 0.200, 0.175, 0.150, 0.125, 0.100,
+    0.070, 0.050, 0.030, 0.020, 0.010, 0.007, 0.005, 0.003, 0.002, 0.001,
+], dtype=float)
+
 def _compute_theta(t, p):
     if p.ndim == 1: p_bc = _broadcast_p(t, p)
     else: p_bc = p
@@ -63,19 +71,44 @@ def _vorticity_sh(u,v,lat,lon):
     return zeta
 
 def _interp_to_sigma(field_plev, plev_Pa, ps, sigma_levels):
-    """Interpolate pressure→sigma. All arrays surface→top (descending p/σ).
-    np.interp requires increasing x, so we work in ascending (top→surface)
-    and flip back."""
-    nlev,nlat,nlon=field_plev.shape; nsig=len(sigma_levels)
-    log_plev_asc=np.log(plev_Pa[::-1])
-    field_sigma=np.empty((nsig,nlat,nlon),dtype=field_plev.dtype)
+    """Interpolate pressure→sigma. Handles any monotonic plev/sigma ordering.
+
+    Returns field on sigma_levels in the SAME vertical order as sigma_levels.
+    Out-of-range (σ·ps outside plev bounds) → NaN.
+    """
+    nlev, nlat, nlon = field_plev.shape
+    nsig = len(sigma_levels)
+    plev_Pa = np.asarray(plev_Pa, dtype=float)
+
+    # ── put plev in ascending order for np.interp ──
+    if plev_Pa[0] > plev_Pa[-1]:
+        plev_asc = plev_Pa[::-1]
+        field_asc = field_plev[::-1, :, :]
+    else:
+        plev_asc = plev_Pa
+        field_asc = field_plev
+
+    log_plev_asc = np.log(plev_asc)
+    p_min, p_max = plev_asc[0], plev_asc[-1]
+
+    # ── determine sigma_levels orientation ──
+    sigma_asc = sigma_levels[0] < sigma_levels[-1]
+
+    field_sigma = np.empty((nsig, nlat, nlon), dtype=field_plev.dtype)
     for j in range(nlat):
         for i in range(nlon):
-            p_sig=sigma_levels*ps[j,i]
-            log_p_asc=np.log(np.maximum(p_sig[::-1],1e-3))
-            col_asc=field_plev[::-1,j,i]
-            ia=np.interp(log_p_asc,log_plev_asc,col_asc,left=col_asc[0],right=col_asc[-1])
-            field_sigma[:,j,i]=ia[::-1]
+            p_sig = sigma_levels * ps[j, i]
+            # np.interp needs increasing x
+            if sigma_asc:
+                log_p = np.log(np.maximum(p_sig, 1e-3))
+            else:
+                log_p = np.log(np.maximum(p_sig[::-1], 1e-3))
+
+            ia = np.interp(log_p, log_plev_asc, field_asc[:, j, i],
+                           left=np.nan, right=np.nan)
+            if not sigma_asc:
+                ia = ia[::-1]
+            field_sigma[:, j, i] = ia
     return field_sigma
 
 
@@ -96,38 +129,57 @@ def ertel_pv_isobaric(u, v, t, plev, lat, lon, method="simple"):
 
 
 def ertel_pv_sigma(u, v, t, plev, ps, lat, lon, sigma_levels=None, method="simple"):
-    """Ertel PV on terrain-following sigma levels.
+    """Ertel PV on terrain-following sigma levels (σ = p / p_s).
 
-    Returns both sigma-level PV and ERA5 PV interpolated to sigma for
-    direct comparison on the same surfaces.
+    Parameters
+    ----------
+    u, v, t : (nlev, nlat, nlon)  Wind components [m/s] and temperature [K].
+    plev : (nlev,)  Pressure levels [Pa] in any monotonic order.
+    ps : (nlat, nlon)  Surface pressure [Pa].
+    lat, lon : (nlat,), (nlon,)  Latitudes [°S→N], longitudes [°E].
+    sigma_levels : (nsig,) optional  σ levels, default 37-level ERA5 set.
+    method : str  "simple" (stretching only) or "full" (all 3 terms).
 
     Returns
     -------
-    pv_sigma : (nsig, nlat, nlon)  PV computed on sigma levels [PVU].
-    pv_era5_sigma : (nsig, nlat, nlon)  Original p-level PV interpolated
-        to sigma for comparison [PVU] (pass as pv_era5) — NOT computed
-        internally; caller must provide via *pv_era5_plev*.
+    pv_sigma : (nsig, nlat, nlon)  Ertel PV on σ levels [PVU].
+    p_s3d : (nsig, nlat, nlon)  Actual pressure at each σ level [Pa].
     """
-    ndim=u.ndim; nla=lat.shape[0]
-    if sigma_levels is None: sigma_levels=plev/P0
-    sigma_levels=np.asarray(sigma_levels,dtype=float)
-    if sigma_levels[0]<sigma_levels[-1]: sigma_levels=sigma_levels[::-1]
-    nsig=len(sigma_levels)
+    ndim = u.ndim; nla = lat.shape[0]
+    if sigma_levels is None:
+        sigma_levels = DEFAULT_SIGMA_LEVELS.copy()
+    sigma_levels = np.asarray(sigma_levels, dtype=float)
+    nsig = len(sigma_levels)
 
-    fc=2.0*OMEGA*np.sin(np.deg2rad(lat)).reshape([1]*(ndim-2)+[nla,1])
-    u_s=_interp_to_sigma(u,plev,ps,sigma_levels)
-    v_s=_interp_to_sigma(v,plev,ps,sigma_levels)
-    t_s=_interp_to_sigma(t,plev,ps,sigma_levels)
+    fc = 2.0*OMEGA*np.sin(np.deg2rad(lat)).reshape([1]*(ndim-2)+[nla,1])
+    u_s = _interp_to_sigma(u, plev, ps, sigma_levels)
+    v_s = _interp_to_sigma(v, plev, ps, sigma_levels)
+    t_s = _interp_to_sigma(t, plev, ps, sigma_levels)
+
+    # Fill NaN at out-of-range σ levels (copy nearest valid level, two-pass)
+    for arr in (u_s, v_s, t_s):
+        for _ in range(2):  # repeat to handle consecutive NaN
+            for k in range(1, nsig):
+                fill = np.isnan(arr[k]) & ~np.isnan(arr[k-1])
+                if fill.any():
+                    arr[k, fill] = arr[k-1, fill]
+            for k in range(nsig-2, -1, -1):
+                fill = np.isnan(arr[k]) & ~np.isnan(arr[k+1])
+                if fill.any():
+                    arr[k, fill] = arr[k+1, fill]
 
     # actual pressure at each sigma level: p(σ) = σ × ps(x,y)
-    p_s3d=sigma_levels[:,np.newaxis,np.newaxis]*ps[np.newaxis,:,:]
-    theta_s=_compute_theta(t_s,p_s3d)
-    zeta_s=_vorticity_sh(u_s,v_s,lat,lon)
-    dthdx_s,dthdy_s=_gradient_sh(theta_s,lat,lon)
-    dudσ=_vert_deriv(u_s,sigma_levels); dvdσ=_vert_deriv(v_s,sigma_levels)
-    dthdσ=_vert_deriv(theta_s,sigma_levels)
+    p_s3d = sigma_levels[:, np.newaxis, np.newaxis] * ps[np.newaxis, :, :]
+    theta_s = _compute_theta(t_s, p_s3d)
+    zeta_s = _vorticity_sh(u_s, v_s, lat, lon)
+    dthdx_s, dthdy_s = _gradient_sh(theta_s, lat, lon)
+    dudσ = _vert_deriv(u_s, sigma_levels)
+    dvdσ = _vert_deriv(v_s, sigma_levels)
+    dthdσ = _vert_deriv(theta_s, sigma_levels)
 
-    inv_ps_3d=(1.0/np.maximum(ps,1.0))[np.newaxis,:,:]
-    pv_stretch=(fc+zeta_s)*dthdσ; pv_s=-G*inv_ps_3d*pv_stretch
-    if method=="full": pv_s=-G*inv_ps_3d*(pv_stretch+dvdσ*dthdx_s-dudσ*dthdy_s)
+    inv_ps_3d = (1.0 / np.maximum(ps, 1.0))[np.newaxis, :, :]
+    pv_stretch = (fc + zeta_s) * dthdσ
+    pv_s = -G * inv_ps_3d * pv_stretch
+    if method == "full":
+        pv_s = -G * inv_ps_3d * (pv_stretch + dvdσ*dthdx_s - dudσ*dthdy_s)
     return pv_s*PVU_SCALE, p_s3d
