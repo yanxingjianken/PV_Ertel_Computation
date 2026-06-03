@@ -117,6 +117,46 @@ def _interp_to_sigma(field_plev, plev_Pa, ps, sigma_levels):
     return field_sigma
 
 
+def _interp_to_sigma_3d(field_plev, p3d, ps, sigma_levels):
+    """Interpolate hybrid/3D-pressure source → fixed sigma levels, per column.
+
+    Like :func:`_interp_to_sigma`, but the source pressure is a full 3-D array
+    ``p3d`` (nlev, nlat, nlon) instead of a shared 1-D ``plev``. Required for
+    terrain-following hybrid coordinates (CAM/CESM2) where the true pressure of
+    each model level varies horizontally: p = hyam·P0 + hybm·ps(x,y).
+
+    Returns field on ``sigma_levels`` in the SAME vertical order as
+    ``sigma_levels``. Out-of-range (σ·ps outside the column's pressure span)
+    → NaN.
+    """
+    nlev, nlat, nlon = field_plev.shape
+    nsig = len(sigma_levels)
+    sigma_asc = sigma_levels[0] < sigma_levels[-1]
+
+    field_sigma = np.empty((nsig, nlat, nlon), dtype=field_plev.dtype)
+    for j in range(nlat):
+        for i in range(nlon):
+            p_col = p3d[:, j, i]
+            f_col = field_plev[:, j, i]
+            # np.interp needs strictly increasing x → ascending pressure
+            if p_col[0] > p_col[-1]:
+                p_col = p_col[::-1]
+                f_col = f_col[::-1]
+            log_p_col = np.log(np.maximum(p_col, 1e-3))
+
+            p_sig = sigma_levels * ps[j, i]
+            if sigma_asc:
+                log_p = np.log(np.maximum(p_sig, 1e-3))
+            else:
+                log_p = np.log(np.maximum(p_sig[::-1], 1e-3))
+
+            ia = np.interp(log_p, log_p_col, f_col, left=np.nan, right=np.nan)
+            if not sigma_asc:
+                ia = ia[::-1]
+            field_sigma[:, j, i] = ia
+    return field_sigma
+
+
 # ═══════════════════════════════════════════════════════════════
 #  Public API
 # ═══════════════════════════════════════════════════════════════
@@ -133,17 +173,36 @@ def ertel_pv_isobaric(u, v, t, plev, lat, lon, method="simple"):
     return pv*PVU_SCALE
 
 
-def ertel_pv_sigma(u, v, t, plev, ps, lat, lon, sigma_levels=None, method="simple"):
+def ertel_pv_sigma(u, v, t, plev, ps, lat, lon, sigma_levels=None, method="simple",
+                   hyam=None, hybm=None, p0=P0, p3d=None):
     """Ertel PV on terrain-following sigma levels (σ = p / p_s).
+
+    Two source-coordinate modes:
+
+    * **Isobaric source** (ERA5): pass 1-D ``plev`` — the level coordinate is the
+      true pressure. ``hyam/hybm/p3d`` left ``None``.
+    * **Hybrid source** (CAM/CESM2): pass ``hyam`` + ``hybm`` (and ``p0``), or a
+      precomputed ``p3d``. The true 3-D pressure
+      ``p = hyam·p0 + hybm·ps(x,y)`` is reconstructed per column before the σ
+      interpolation — ``plev`` is then ignored and may be ``None``. This matches
+      the CAM vertical coordinate (equivalently geocat-comp
+      ``pressure_at_hybrid_levels`` / ``interp_hybrid_to_pressure``).
 
     Parameters
     ----------
     u, v, t : (nlev, nlat, nlon)  Wind components [m/s] and temperature [K].
-    plev : (nlev,)  Pressure levels [Pa] in any monotonic order.
+    plev : (nlev,) or None  Pressure levels [Pa], any monotonic order. May be
+        ``None`` when ``hyam/hybm`` or ``p3d`` is supplied.
     ps : (nlat, nlon)  Surface pressure [Pa].
     lat, lon : (nlat,), (nlon,)  Latitudes [°S→N], longitudes [°E].
-    sigma_levels : (nsig,) optional  σ levels, default 37-level ERA5 set.
+    sigma_levels : (nsig,) optional  σ levels, default 11-level set.
     method : str  "simple" (stretching only) or "full" (all 3 terms).
+    hyam, hybm : (nlev,) optional  CAM hybrid A/B midpoint coefficients
+        (``hyam`` dimensionless, normalized by ``p0``), aligned with the u/v/t
+        level order.
+    p0 : float  Reference pressure for the hybrid formula [Pa]. Default 100000.
+    p3d : (nlev, nlat, nlon) optional  Precomputed true pressure; overrides
+        ``hyam/hybm``.
 
     Returns
     -------
@@ -156,10 +215,22 @@ def ertel_pv_sigma(u, v, t, plev, ps, lat, lon, sigma_levels=None, method="simpl
     sigma_levels = np.asarray(sigma_levels, dtype=float)
     nsig = len(sigma_levels)
 
+    # ── source pressure: hybrid (3-D) vs isobaric (1-D) ──
+    if p3d is None and hyam is not None and hybm is not None:
+        hyam = np.asarray(hyam, dtype=float)
+        hybm = np.asarray(hybm, dtype=float)
+        p3d = (hyam[:, np.newaxis, np.newaxis] * p0
+               + hybm[:, np.newaxis, np.newaxis] * ps[np.newaxis, :, :])
+
     fc = 2.0*OMEGA*np.sin(np.deg2rad(lat)).reshape([1]*(ndim-2)+[nla,1])
-    u_s = _interp_to_sigma(u, plev, ps, sigma_levels)
-    v_s = _interp_to_sigma(v, plev, ps, sigma_levels)
-    t_s = _interp_to_sigma(t, plev, ps, sigma_levels)
+    if p3d is not None:
+        u_s = _interp_to_sigma_3d(u, p3d, ps, sigma_levels)
+        v_s = _interp_to_sigma_3d(v, p3d, ps, sigma_levels)
+        t_s = _interp_to_sigma_3d(t, p3d, ps, sigma_levels)
+    else:
+        u_s = _interp_to_sigma(u, plev, ps, sigma_levels)
+        v_s = _interp_to_sigma(v, plev, ps, sigma_levels)
+        t_s = _interp_to_sigma(t, plev, ps, sigma_levels)
 
     # Fill NaN at out-of-range σ levels (copy nearest valid level, two-pass)
     for arr in (u_s, v_s, t_s):

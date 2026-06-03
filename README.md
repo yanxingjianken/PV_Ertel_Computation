@@ -26,9 +26,18 @@ $\zeta$ from spherical-harmonic vorticity, $f = 2\Omega\sin\phi$.
 | Northward wind | `v` | `V` | m s⁻¹ |
 | Temperature | `t` | `T` | K |
 | Surface pressure | `sp` | `PS` | Pa |
-| Pressure levels | (coordinate) | `lev` | Pa or hPa |
+| Vertical coord | pressure levels | `lev` + `hyam`,`hybm`,`P0` | hPa / — |
 | Latitude | `latitude` | `lat` | °N |
 | Longitude | `longitude` | `lon` | °E |
+
+> **ERA5** is on true isobaric levels — `lev` *is* the pressure. **CESM2 (CAM)** is on
+> hybrid sigma-pressure model levels: `lev` is only a *nominal* reference pressure
+> `(hyam+hybm)·P0`. The **true** pressure of each level is
+> `p = hyam·P0 + hybm·PS(x,y)` (P0 = 100000 Pa; `hyam` is dimensionless). Pass
+> `hyam`/`hybm` to `ertel_pv_sigma(...)` so the σ interpolation uses the true,
+> terrain-following pressure — critical over high terrain. The AWS LENS2 zarr drops
+> these coefficients, so the native CAM history files (GDEX d651056, via Globus) are
+> used instead — see `cesm2_compute/globus_transfer_modellevel.sh`.
 
 ## Project Structure
 
@@ -43,9 +52,9 @@ pv_ertel_compute/
 │   ├── download_era5.py          # CDS API download script
 │   └── validate_era5.py          # Sigma PV vs ERA5 native PV
 ├── cesm2_compute/
-│   ├── data/                     # CESM2 sample (u,v,t,ps)
-│   ├── plots/                    # CESM2 sigma PV plots
-│   └── compute_cesm2_pv.py       # AWS S3 download + sigma PV
+│   ├── globus_transfer_modellevel.sh  # Globus: native CAM h6 U/V/T + h1 PS (GDEX d651056)
+│   ├── compute_cesm2_pv_globus.py     # hybrid-correct PV from native model levels
+│   └── globus_out/                    # PV netCDF + validation plot
 ├── handbook/
 │   ├── ertel_pv_handbook.tex     # LaTeX math documentation
 │   └── ertel_pv_handbook.pdf     # Compiled PDF
@@ -66,10 +75,11 @@ graph TD
     D --> G[era5_pv_sigma_comparison.png]
     D --> H[era5_pv_sigma_rms_profile.png]
 
-    I[CESM2 AWS S3] --> J[compute_cesm2_pv.py]
-    J --> K[U,V,T,PS zarr stores]
-    K --> E
-    J --> L[cesm2le_pv_sigma.png]
+    I[GLADE GDEX d651056] -->|Globus| J[globus_transfer_modellevel.sh]
+    J --> K[native CAM h6 U/V/T + h1 PS + hyam/hybm/P0]
+    K --> M[compute_cesm2_pv_globus.py]
+    M --> E
+    M --> L[cesm2le_mNN_pv_sigma.png]
 
     style E fill:#f9f,stroke:#333,stroke-width:2px
 ```
@@ -83,12 +93,26 @@ cd era_sanity_check
 micromamba run -n blocking python validate_era5.py
 ```
 
-### CESM2-LENS2 PV
+### CESM2-LENS2 PV (native hybrid model levels, via Globus)
+
+See [`docs/cesm_hybrid_levels.md`](docs/cesm_hybrid_levels.md) for the full hybrid-level
++ Globus/GLADE reference (also the Claude skill `cesm-hybrid-levels`).
 
 ```bash
 cd cesm2_compute
-micromamba run -n blocking python compute_cesm2_pv.py
+# (a) transfer native model-level data for a member/decade (huge, ~60 GB):
+module load apps/globusconnectpersonal/3.2.2 && globus login   # once per session
+bash globus_transfer_modellevel.sh 1 20102014                  # -> globus_data/m1_d20102014/
+
+# (b) compute hybrid-correct sigma PV (kept day-slice sample works the same):
+micromamba run -n blocking python compute_cesm2_pv_globus.py \
+    --stage-dir globus_data/sample_m01_2010-01-01 --member 1 --date 2010-01-01
+# add --cleanup to delete the raw decade files after extracting the day.
 ```
+
+A 33 MB day-slice sample (U/V/T/PS + `hyam/hybm/P0` for 2010-01-01) is kept at
+`cesm2_compute/globus_data/sample_m01_2010-01-01/`; the full ~60 GB decade files are
+not retained.
 
 ### Python API
 
