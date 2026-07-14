@@ -61,20 +61,32 @@ Endpoints (verified):
 - **GCP "dolma"** (dest): `ae8d0ae3-4c75-11f0-88e6-02fa2a4031ab` — GCP exposes **only
   `$HOME`**; move large files to `/net/flood/data2` (~70 TB) after transfer.
 
-Base path:
+Base path (single-variable timeseries; `<freq>` = `day_1`, `hour_6`, `month_1`, …):
 
-    /glade/campaign/collections/gdex/data/d651056/CESM2-LE/atm/proc/tseries/day_1
+    /glade/campaign/collections/gdex/data/d651056/CESM2-LE/atm/proc/tseries/<freq>
 
-- Native 3-D (32 hybrid levels, coeffs embedded): `U/ V/ T/ Z3/` as `cam.h6`
-  (~18–22 GB/var/decade). Surface pressure `PS/` as `cam.h1` (~0.24 GB).
-- Pressure-level slices alongside: `U500/ U850/ …` (already isobaric).
+- **Daily** (`day_1`): native 3-D (32 hybrid levels, coeffs embedded) `U/ V/ T/ Z3/` as `cam.h6`
+  (~18–22 GB/var/decade); surface pressure `PS/` as `cam.h1` (~0.24 GB). ✅ verified on-disk.
+- **6-hourly** (`hour_6`): instantaneous 3-D also available — confirm the exact history-tape label
+  (`cam.hN`) by listing the d651056 file tree (tape numbering differs from the daily `h6`; don't assume).
+- Pressure-level slices alongside: `U500/ U850/ Z500/ …` (already isobaric — cheaper if you only need a
+  few standard levels). GDEX `d651056` offers annual/monthly/5-day/daily/6-hourly/3-hourly frequencies.
 
 Naming + member map:
 
-    b.e21.BHISTcmip6.f09_g17.LE2-<INIT>.<MEM_STR>.cam.<h6|h1>.<VAR>.<YYYYMMDD-YYYYMMDD>.nc
-    member→INIT (first 10): 1→1001 2→1021 3→1041 4→1061 5→1081
-                            6→1101 7→1121 8→1141 9→1161 10→1181   (MEM_STR=%03d)
-    decades: 19850101-19891231 19900101-19991231 20000101-20091231 20100101-20141231
+    b.e21.BHIST{cmip6|smbb}.f09_g17.LE2-<INIT>.<MEM_STR>.cam.<tape>.<VAR>.<YYYYMMDD-YYYYMMDD>.nc  (hist)
+    b.e21.BSSP370{cmip6|smbb}.f09_g17.LE2-<INIT>.<MEM_STR>.cam.<tape>.<VAR>.<...>.nc                (ssp370)
+    decades (hist): 19850101-19891231 19900101-19991231 20000101-20091231 20100101-20141231
+
+How the 100 members are generated (Rodgers et al. 2021; variable names identical across all members —
+only <INIT>.<MEM_STR> and the `cmip6`/`smbb` tag change):
+- **Macro-only (20 members, MEM_STR=001):** <INIT> = piControl branch year (macro/AMOC state).
+    members  1–10 → INIT 1001 1021 1041 1061 1081 1101 1121 1141 1161 1181
+    members 91–100 → INIT 1011 1031 1051 1071 1091 1111 1131 1151 1171 1191
+- **Micro (80 members):** 4 AMOC-phase states INIT ∈ {1231,1251,1281,1301}, each × 20 members
+  (MEM_STR 001…020) differing by an O(1e-14 K) round-off perturbation of atmospheric potential temperature.
+- **Biomass burning:** 50 members `cmip6` (original CMIP6 BB) + 50 `smbb` (11-yr smoothed BB), evenly
+  spread across init dates; encoded in the case name (`BHISTcmip6` vs `BHISTsmbb`).
 
 Transfer (auth once per session, NCAR OIDC = Kerberos + Duo):
 

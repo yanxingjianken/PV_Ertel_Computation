@@ -32,6 +32,10 @@ DEFAULT_SIGMA_LEVELS = np.array([
     0.400, 0.300, 0.250, 0.200, 0.100,
 ], dtype=float)
 
+# Default isentropic (θ) output levels [K] — the mid-latitude "middleworld"
+# isentropes that intersect the tropopause, standard for RWB / blocking PV maps.
+DEFAULT_THETA_LEVELS = np.array([300., 315., 320., 330., 350.], dtype=float)
+
 def _compute_theta(t, p):
     if p.ndim == 1: p_bc = _broadcast_p(t, p)
     else: p_bc = p
@@ -174,7 +178,7 @@ def ertel_pv_isobaric(u, v, t, plev, lat, lon, method="simple"):
 
 
 def ertel_pv_sigma(u, v, t, plev, ps, lat, lon, sigma_levels=None, method="simple",
-                   hyam=None, hybm=None, p0=P0, p3d=None):
+                   hyam=None, hybm=None, p0=P0, p3d=None, return_theta=False):
     """Ertel PV on terrain-following sigma levels (σ = p / p_s).
 
     Two source-coordinate modes:
@@ -203,11 +207,15 @@ def ertel_pv_sigma(u, v, t, plev, ps, lat, lon, sigma_levels=None, method="simpl
     p0 : float  Reference pressure for the hybrid formula [Pa]. Default 100000.
     p3d : (nlev, nlat, nlon) optional  Precomputed true pressure; overrides
         ``hyam/hybm``.
+    return_theta : bool  If True, also return potential temperature θ on the σ
+        levels (needed to output isentropic PV via :func:`interp_to_isentropic`).
 
     Returns
     -------
     pv_sigma : (nsig, nlat, nlon)  Ertel PV on σ levels [PVU].
     p_s3d : (nsig, nlat, nlon)  Actual pressure at each σ level [Pa].
+    theta_s : (nsig, nlat, nlon)  Potential temperature on σ levels [K].
+        Returned only when ``return_theta=True``.
     """
     ndim = u.ndim; nla = lat.shape[0]
     if sigma_levels is None:
@@ -258,4 +266,90 @@ def ertel_pv_sigma(u, v, t, plev, ps, lat, lon, sigma_levels=None, method="simpl
     pv_s = -G * inv_ps_3d * pv_stretch
     if method == "full":
         pv_s = -G * inv_ps_3d * (pv_stretch + dvdσ*dthdx_s - dudσ*dthdy_s)
-    return pv_s*PVU_SCALE, p_s3d
+    pv_s = pv_s * PVU_SCALE
+    if return_theta:
+        return pv_s, p_s3d, theta_s
+    return pv_s, p_s3d
+
+
+def interp_to_pressure(field_sigma, p_s3d, target_pa):
+    """Interpolate a σ-level field onto target pressure levels (per column, log-p).
+
+    Parameters
+    ----------
+    field_sigma : (nsig, nlat, nlon)  Field on σ levels (e.g. PV from
+        :func:`ertel_pv_sigma`).
+    p_s3d : (nsig, nlat, nlon)  Actual pressure of each σ level [Pa] (the second
+        return value of :func:`ertel_pv_sigma`).
+    target_pa : (nout,)  Target pressure levels [Pa].
+
+    Returns
+    -------
+    (nout, nlat, nlon)  Field on the target pressure levels; out-of-range → NaN.
+    """
+    field_sigma = np.asarray(field_sigma, dtype=float)
+    target_pa = np.asarray(target_pa, dtype=float)
+    nsig, nlat, nlon = field_sigma.shape
+    out = np.full((len(target_pa), nlat, nlon), np.nan, dtype=float)
+    logt = np.log(target_pa)
+    for j in range(nlat):
+        for i in range(nlon):
+            p = p_s3d[:, j, i]; f = field_sigma[:, j, i]
+            if np.all(np.isnan(f)):
+                continue
+            if p[0] > p[-1]:                       # np.interp needs ascending x
+                p = p[::-1]; f = f[::-1]
+            with np.errstate(invalid="ignore"):
+                out[:, j, i] = np.interp(logt, np.log(p), f, left=np.nan, right=np.nan)
+    return out
+
+
+def interp_to_isentropic(field_sigma, theta_s, theta_levels=None):
+    """Interpolate a σ-level field onto target isentropic (θ) surfaces, per column.
+
+    θ increases with height in a statically stable atmosphere, so it is a valid
+    monotone vertical coordinate. Where θ is locally non-monotone (e.g. a shallow
+    superadiabatic surface layer on the coarse σ grid) the profile is made
+    monotone non-decreasing (``np.maximum.accumulate``) before interpolation so
+    ``np.interp`` stays well defined; this collapses unstable layers and does not
+    affect the free-tropospheric / UTLS θ range used for RWB/blocking maps.
+
+    Note (Option A): this SAMPLES the σ-coordinate PV at θ — the relative
+    vorticity ζ was evaluated on σ surfaces, not recomputed on the isentrope.
+    Validated against ERA5 native PV-on-θ in ``era_sanity_check``.
+
+    Parameters
+    ----------
+    field_sigma : (nsig, nlat, nlon)  Field on σ levels (e.g. PV).
+    theta_s : (nsig, nlat, nlon)  Potential temperature on the same σ levels [K]
+        (from ``ertel_pv_sigma(..., return_theta=True)``).
+    theta_levels : (nout,) optional  Target θ levels [K]; default
+        :data:`DEFAULT_THETA_LEVELS`.
+
+    Returns
+    -------
+    (nout, nlat, nlon)  Field on the target θ surfaces; out-of-range → NaN.
+    """
+    field_sigma = np.asarray(field_sigma, dtype=float)
+    theta_s = np.asarray(theta_s, dtype=float)
+    if theta_levels is None:
+        theta_levels = DEFAULT_THETA_LEVELS.copy()
+    theta_levels = np.asarray(theta_levels, dtype=float)
+    nsig, nlat, nlon = field_sigma.shape
+    out = np.full((len(theta_levels), nlat, nlon), np.nan, dtype=float)
+    for j in range(nlat):
+        for i in range(nlon):
+            th = theta_s[:, j, i]; f = field_sigma[:, j, i]
+            good = ~np.isnan(th) & ~np.isnan(f)
+            if good.sum() < 2:
+                continue
+            thc = th[good]; fc = f[good]
+            if thc[0] > thc[-1]:                   # ensure surface→top (ascending θ)
+                thc = thc[::-1]; fc = fc[::-1]
+            thm = np.maximum.accumulate(thc)       # enforce monotone non-decreasing
+            # break exact ties left by accumulate so np.interp is single-valued
+            for k in range(1, thm.size):
+                if thm[k] <= thm[k - 1]:
+                    thm[k] = thm[k - 1] + 1e-6
+            out[:, j, i] = np.interp(theta_levels, thm, fc, left=np.nan, right=np.nan)
+    return out
