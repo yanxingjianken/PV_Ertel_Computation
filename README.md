@@ -90,6 +90,24 @@ laid out as `.../atm/proc/tseries/<freq>/<VAR>/<file>.nc` (e.g. `day_1`, `hour_6
   on the AWS zarr — cheaper if you only need a few standard levels (the `cesm2_plev/` gate quantifies the
   accuracy cost of using them; see below).
 
+### Sample file paths (member `LE2-1001.001`, decade 2010–2014)
+
+```text
+# Native hybrid-level U — 32 model levels, hyam/hybm/hyai/hybi/P0 embedded (tape cam.h6):
+/glade/campaign/collections/gdex/data/d651056/CESM2-LE/atm/proc/tseries/day_1/U/b.e21.BHISTcmip6.f09_g17.LE2-1001.001.cam.h6.U.20100101-20141231.nc
+
+# Pressure-level U slice — one level per file (tape cam.h1); nearest published level to 250 hPa is 200:
+/glade/campaign/collections/gdex/data/d651056/CESM2-LE/atm/proc/tseries/day_1/U200/b.e21.BHISTcmip6.f09_g17.LE2-1001.001.cam.h1.U200.*.nc
+```
+
+> ⚠️ **LENS2 has no `U250` slice.** The published pressure-level zonal-wind slices are
+> `{U010, U200, U500, U700, U850}` — the 250/300 hPa band is skipped. To get **250-hPa** wind,
+> interpolate the native hybrid `U` (`p = hyam·P0 + hybm·PS`) to 250 hPa — exactly what
+> `cesm2_compute/compute_cesm2_pv_globus.py` does (`DEFAULT_PRESSURE_HPA` includes 250). Glob
+> `*.cam.h1.U200.*.nc` rather than hardcoding dates: the `cam.h1` slice date-chunking may differ from the
+> `cam.h6` 5-year chunks. (The hybrid-`U` path above is verified against the on-disk sample; the `cam.h1`
+> `U200` path's exact date token is not.)
+
 ### Member naming & how members differ
 
 Filename convention:
