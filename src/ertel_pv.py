@@ -316,7 +316,7 @@ def interp_to_isentropic(field_sigma, theta_s, theta_levels=None):
 
     Note (Option A): this SAMPLES the σ-coordinate PV at θ — the relative
     vorticity ζ was evaluated on σ surfaces, not recomputed on the isentrope.
-    Validated against ERA5 native PV-on-θ in ``era_sanity_check``.
+    Validated against ERA5 native PV-on-θ in ``test00_era5_sanity_check``.
 
     Parameters
     ----------

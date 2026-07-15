@@ -95,11 +95,14 @@ Transfer (auth once per session, NCAR OIDC = Kerberos + Duo):
     globus transfer "<GLADE>:<remote>/<file>.nc" "<GCP>:<home-rel>/<file>.nc" --label ...
     globus task show <TASK_ID>          # poll until Status: SUCCEEDED
 
-Turn-key scripts:
-- `cesm2_compute/globus_transfer_modellevel.sh <MEMBER> <DECADE>` — native U/V/T (h6) +
-  PS (h1); moves home→`cesm2_compute/globus_data/m<M>_d<DEC>/`.
-- `cesm2_compute/compute_cesm2_pv_globus.py --stage-dir <dir> --member <M> --date <YMD>`
-  — native files → hybrid-correct σ-PV + plot.
+Turn-key scripts (ordered pipeline — see the top-level README):
+- **01** `01_download_cesm2/globus_transfer_modellevel.sh <MEMBER> <DECADE>` — native U/V/T (h6) +
+  PS (h1); moves home→`01_download_cesm2/globus_data/m<M>_d<DEC>/`. On NCAR machines use
+  `01_download_cesm2/symlink_ncar.sh <MEMBER> <DECADE>` instead (symlinks mounted `/glade`, no transfer).
+- **02** `02_compute_pv_hybrid/compute_pv_hybrid.py --stage-dir <dir> --member <M> --date <YMD>`
+  — native files → hybrid-correct σ-PV netCDF (`pv_sigma/p_sigma/theta_sigma`) + plot.
+- **03** `03_interp_to_levels/interp_pv_to_levels.py --pv-sigma-nc <02 output>` — σ-PV →
+  isobaric + isentropic surfaces + plots.
 
 ### Keep only a day slice
 Globus can't subset a file, so one day still pulls the whole ~20 GB/var decade file.
@@ -109,7 +112,7 @@ After computing, extract the date and delete the raw decade files:
     sub.to_netcdf(out, encoding={v: {"zlib": True, "complevel": 4} for v in sub.data_vars})
 
 The slice (~10 MB/var) still carries `hyam/hybm/P0`. Worked example:
-`cesm2_compute/globus_data/sample_m01_2010-01-01/`.
+`01_download_cesm2/globus_data/sample_m01_2010-01-01/`.
 
 ## 5. Gotchas
 - Verify `lev == (hyam+hybm)*P0/100` to machine precision (confirms `lev` is nominal).

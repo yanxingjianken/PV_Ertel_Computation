@@ -16,7 +16,7 @@ GATE to adopt the cheaper plev path: r >= 0.95 at ALL of 850/500/250 AND NaN mas
 
 Usage:
     micromamba run -n blocking python compare_plev_vs_hybrid_pv.py \
-        --data-dir /net/flood/data2/users/x_yan/pv_ertel_compute/cesm2_plev/test_m1_2010 \
+        --data-dir /net/flood/data2/users/x_yan/pv_ertel_compute/test01_plev_vs_hybrid/test_m1_2010 \
         --member 1 --dates 2010-01-15,2010-07-15,2011-04-15,2012-10-15,2013-07-16,2014-01-15
 """
 import argparse

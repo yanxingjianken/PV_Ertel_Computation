@@ -23,7 +23,7 @@ stretching term $(f+\zeta)\partial\theta/\partial\sigma$.
 - **Sigma grid**: 11 levels {1.0, 0.925, 0.85, 0.7, 0.6, 0.5, 0.4, 0.3, 0.25, 0.2, 0.1}.
 - **Isentropic output**: the σ-level PV is sampled onto θ surfaces using θ(σ) as the vertical
   coordinate (`interp_to_isentropic`). Note this samples the σ-coordinate PV at θ (ζ stays on σ); it
-  is validated against ERA5 native PV-on-θ in `era_sanity_check`.
+  is validated against ERA5 native PV-on-θ in `test00_era5_sanity_check`.
 
 ### On the spherical vorticity metric term ($u\tan\phi/a$)
 
@@ -87,8 +87,8 @@ laid out as `.../atm/proc/tseries/<freq>/<VAR>/<file>.nc` (e.g. `day_1`, `hour_6
 - **Isobaric vs native-hybrid.** For true-pressure or σ / isentropic PV, use the **native 32-level**
   files (`cam.h6`, coefficients embedded) and reconstruct $p = hyam\cdot P0 + hybm\cdot PS$.
   Pre-computed **pressure-level slices** (e.g. `U500`, `U850`, `Z500`) are also distributed alongside and
-  on the AWS zarr — cheaper if you only need a few standard levels (the `cesm2_plev/` gate quantifies the
-  accuracy cost of using them; see below).
+  on the AWS zarr — cheaper if you only need a few standard levels (the `test01_plev_vs_hybrid/` gate
+  quantifies the accuracy cost of using them).
 
 ### Sample file paths (member `LE2-1001.001`, decade 2010–2014)
 
@@ -136,80 +136,92 @@ decade ranges, day-slice extraction).
 
 ```
 pv_ertel_compute/
-├── src/
-│   ├── __init__.py
-│   └── ertel_pv.py              # Core: ertel_pv_sigma / ertel_pv_isobaric
-│   │                            #       interp_to_pressure / interp_to_isentropic
-├── tests/
-│   └── test_metric_term.py      # proof: SH ζ keeps the +u·tanφ/a metric term
-├── era_sanity_check/
-│   ├── data/                    # ERA5 NetCDF (u,v,t,pv,sp)
-│   ├── plots/                   # sigma / isentropic / isobaric validation figures
-│   ├── download_era5.py         # CDS API download
-│   └── validate_era5.py         # PV vs ERA5 native PV: σ, θ, and p panels
-├── cesm2_compute/
-│   ├── globus_transfer_modellevel.sh  # Globus: native CAM h6 U/V/T + h1 PS (GDEX d651056)
-│   └── compute_cesm2_pv_globus.py     # hybrid PV → σ / pressure / isentropic outputs
-├── cesm2_plev/
-│   └── compare_plev_vs_hybrid_pv.py   # gate: pressure-level vs hybrid-native PV
-├── docs/
-│   └── cesm_hybrid_levels.md     # hybrid levels + Globus/GLADE data-access reference
-├── handbook/
-│   ├── ertel_pv_handbook.tex / .pdf   # LaTeX math documentation
+│  # ── shared (used by every step) ──
+├── src/ertel_pv.py              # Core: ertel_pv_sigma / ertel_pv_isobaric
+│                                #       interp_to_pressure / interp_to_isentropic
+├── tests/test_metric_term.py    # proof: SH ζ keeps the +u·tanφ/a metric term
+├── docs/cesm_hybrid_levels.md   # hybrid levels + Globus/GLADE data-access reference
+├── handbook/                    # LaTeX math handbook (.tex / .pdf)
+│  # ── ordered reproduction pipeline ──
+├── test00_era5_sanity_check/    # validate the PV core vs ERA5 native pv (σ/θ/p)
+│   ├── download_era5.py         #   CDS API download
+│   └── validate_era5.py         #   PV vs ERA5: σ, θ, and p panels → plots/
+├── 01_download_cesm2/           # stage native hybrid U/V/T (cam.h6) + PS (cam.h1)
+│   ├── globus_transfer_modellevel.sh   #   dolma: Globus pull from GDEX d651056
+│   └── symlink_ncar.sh                 #   NCAR: symlink from mounted /glade
+├── 02_compute_pv_hybrid/        # Ertel PV on native σ grid → σ-PV netCDF
+│   └── compute_pv_hybrid.py     #   p=hyam·P0+hybm·PS; writes pv_sigma/p_sigma/theta_sigma
+├── 03_interp_to_levels/         # σ-PV → isobaric + isentropic surfaces
+│   └── interp_pv_to_levels.py   #   interp_to_pressure / interp_to_isentropic
+├── test01_plev_vs_hybrid/       # optional gate: cheap plev-slice vs native-hybrid PV
+│   └── compare_plev_vs_hybrid_pv.py
 ├── README.md
-├── CHANGELOG.md                  # → /home/x_yan/.github/session_findings/changelogs/
+├── CHANGELOG.md                 # → /home/x_yan/.github/session_findings/changelogs/
 └── plan.md
 ```
+
+Reproduce on **dolma or any NCAR machine**: `test00` (validate the core) → `01`
+(get data) → `02` (compute σ-PV) → `03` (interpolate to p/θ). `test01` is an
+optional accuracy check, not part of the main flow.
 
 ## Workflow
 
 ```mermaid
 graph TD
-    A[ERA5 CDS API] --> B[download_era5.py]
-    B --> C[pl.nc + sp.nc]
-    C --> D[validate_era5.py]
+    subgraph test00 [test00 · ERA5 sanity check]
+        C[ERA5 pl.nc + sp.nc] --> D[validate_era5.py] --> G[σ/θ/p vs ERA5 figures]
+    end
+    subgraph pipe [01 → 02 → 03 · CESM2 pipeline]
+        I[GLADE GDEX d651056] -->|Globus dolma / symlink NCAR| J[01_download_cesm2]
+        J --> K[native CAM h6 U/V/T + h1 PS + hyam/hybm/P0]
+        K --> M[02 compute_pv_hybrid.py]
+        M --> N[σ-PV netCDF: pv_sigma/p_sigma/theta_sigma]
+        N --> P[03 interp_pv_to_levels.py]
+        P --> L[pressure + isentropic PV netCDF + plots]
+    end
     D --> E[src/ertel_pv.py]
-    E --> F[ertel_pv_sigma → interp_to_pressure / interp_to_isentropic]
-    D --> G[σ / θ / p validation figures]
-
-    I[GLADE GDEX d651056] -->|Globus| J[globus_transfer_modellevel.sh]
-    J --> K[native CAM h6 U/V/T + h1 PS + hyam/hybm/P0]
-    K --> M[compute_cesm2_pv_globus.py]
     M --> E
-    M --> L[σ / pressure / isentropic PV netCDF + plots]
-
+    P --> E
     style E fill:#f9f,stroke:#333,stroke-width:2px
 ```
 
 ## Usage
 
-### ERA5 validation (σ, isentropic, isobaric)
+### test00 — ERA5 validation (σ, isentropic, isobaric)
 
 ```bash
-cd era_sanity_check
+cd test00_era5_sanity_check
 micromamba run -n blocking python validate_era5.py
 ```
 
-### CESM2-LENS2 PV (native hybrid model levels, via Globus)
+### CESM2-LENS2 pipeline (01 → 02 → 03)
 
 See [`docs/cesm_hybrid_levels.md`](docs/cesm_hybrid_levels.md) for the full hybrid-level + Globus/GLADE
 reference (also the Claude skill `cesm-hybrid-levels`).
 
 ```bash
-cd cesm2_compute
-# (a) transfer native model-level data for a member/decade (huge, ~60 GB):
-module load apps/globusconnectpersonal/3.2.2 && globus login    # once per session
-bash globus_transfer_modellevel.sh 1 20102014                   # -> globus_data/m1_d20102014/
+# 01 — stage native hybrid U/V/T (cam.h6) + PS (cam.h1) for a member/decade:
+cd 01_download_cesm2
+module load apps/globusconnectpersonal/3.2.2 && globus login   # dolma, once per session
+bash globus_transfer_modellevel.sh 1 20102014                  # -> globus_data/m1_d20102014/
+#   on an NCAR machine instead:  bash symlink_ncar.sh 1 20102014   (no transfer, symlinks /glade)
 
-# (b) compute hybrid-correct PV and emit σ + pressure + isentropic products:
-micromamba run -n blocking python compute_cesm2_pv_globus.py \
-    --stage-dir globus_data/sample_m01_2010-01-01 --member 1 --date 2010-01-01 \
-    --output-coords sigma,pressure,isentropic
-# --theta-levels / --pressure-levels override the defaults; --cleanup drops raw decade files.
+# 02 — Ertel PV on the native σ grid  ->  σ-PV netCDF:
+cd ../02_compute_pv_hybrid
+micromamba run -n blocking python compute_pv_hybrid.py \
+    --stage-dir ../01_download_cesm2/globus_data/sample_m01_2010-01-01 \
+    --member 1 --date 2010-01-01
+
+# 03 — interpolate the σ-PV onto pressure + isentropic surfaces:
+cd ../03_interp_to_levels
+micromamba run -n blocking python interp_pv_to_levels.py \
+    --pv-sigma-nc ../02_compute_pv_hybrid/out/cesm2le_m01_pv_sigma_2010-01-01.nc \
+    --output-coords pressure,isentropic
+# 03: --theta-levels / --pressure-levels override the defaults.
 ```
 
 A 33 MB day-slice sample (U/V/T/PS + `hyam/hybm/P0`, 2010-01-01) is kept at
-`cesm2_compute/globus_data/sample_m01_2010-01-01/`.
+`01_download_cesm2/globus_data/sample_m01_2010-01-01/`.
 
 ### Python API
 
@@ -236,7 +248,7 @@ pv_sigma, p_s3d, theta_s = ertel_pv_sigma(U, V, T, None, PS, lat, lon,
 
 ## Validation (ERA5, 2025-01-08 00Z, full 3-term formula)
 
-Three cross-checks against ERA5's own `pv` field (`era_sanity_check/validate_era5.py`):
+Three cross-checks against ERA5's own `pv` field (`test00_era5_sanity_check/validate_era5.py`):
 
 **(1) Sigma** — our σ-PV vs ERA5 PV interpolated to σ:
 
